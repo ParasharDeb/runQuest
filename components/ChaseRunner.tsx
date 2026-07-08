@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from "react";
 
 type Phase = "idle" | "running" | "caught";
 
+type WeatherSummary = {
+  label: string;
+  icon: string;
+  backgroundImage: string;
+};
+
 const GAP_MAX = 100;
 const GAP_START = 62;
 const CATCH_GAP = 0;
@@ -37,7 +43,6 @@ export default function ChaseRunner() {
 
   const heroImgRef = useRef<HTMLImageElement | null>(null);
   const villainImgRef = useRef<HTMLImageElement | null>(null);
-  const bgImgRef = useRef<HTMLImageElement | null>(null);
   const imagesReadyRef = useRef(0);
 
   // --- BLE treadmill state ---
@@ -50,20 +55,108 @@ export default function ChaseRunner() {
   const [bleStatus, setBleStatus] = useState("Not connected");
   const [bleSpeed, setBleSpeed] = useState(0);
   const [bleDistance, setBleDistance] = useState(0);
+  const [weatherSummary, setWeatherSummary] = useState<WeatherSummary>({
+    label: "Weather: loading",
+    icon: "⛅",
+    backgroundImage: "/background.jpeg",
+  });
 
-  // Load sprites + background once
+  // Load sprites once
   useEffect(() => {
     const hero = new Image();
     const villain = new Image();
-    const bg = new Image();
     hero.src = "/sprites/hero.png";
     villain.src = "/sprites/villain.png";
-    bg.src = "/background.jpeg";
     hero.onload = () => (imagesReadyRef.current += 1);
     villain.onload = () => (imagesReadyRef.current += 1);
     heroImgRef.current = hero;
     villainImgRef.current = villain;
-    bgImgRef.current = bg;
+  }, []);
+
+  useEffect(() => {
+    // if (!navigator.geolocation) {
+    //   setWeatherSummary({
+    //     label: "Weather: cloudy",
+    //     icon: "☁️",
+    //     backgroundImage: "/cloudy_background.jpg",
+    //   });
+    //   return;
+    // }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+
+        try {
+          const response = await fetch(
+            `https://api.open-meteo.com/v1/forecast?latitude=${latitude.toFixed(4)}&longitude=${longitude.toFixed(4)}&current=temperature_2m,weather_code&timezone=auto`
+          );
+
+          if (!response.ok) {
+            throw new Error("Weather request failed");
+          }
+
+          const data = await response.json();
+          const weatherCode = data?.current?.weather_code;
+          const temperature = data?.current?.temperature_2m;
+
+          let summary: WeatherSummary = {
+            label: "Weather: cloudy",
+            icon: "☁️",
+            backgroundImage: "/cloudy_background.jpg",
+          };
+
+          if (typeof temperature === "number" && temperature < 8) {
+            summary = {
+              label: `Weather: cold (${Math.round(temperature)}°C)`,
+              icon: "🥶",
+              backgroundImage: "/cold_background.jpg",
+            };
+          } else if (weatherCode === 45 || weatherCode === 48) {
+            summary = {
+              label: "Weather: foggy",
+              icon: "🌫️",
+              backgroundImage: "/foggy_background.jpg",
+            };
+          } else if ([51, 53, 55, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99].includes(weatherCode ?? -1)) {
+            summary = {
+              label: "Weather: rainy",
+              icon: "🌧️",
+              backgroundImage: "/rainy_background.jpg",
+            };
+          } else if ([0, 1, 2, 3].includes(weatherCode ?? -1)) {
+            summary = {
+              label: `Weather: cloudy (${Math.round(temperature ?? 0)}°C)`,
+              icon: "☁️",
+              backgroundImage: "/cloudy_background.jpg",
+            };
+          } else if (typeof temperature === "number") {
+            summary = {
+              label: `Weather: clear (${Math.round(temperature)}°C)`,
+              icon: "☀️",
+              backgroundImage: "/background.jpeg",
+            };
+          }
+
+          setWeatherSummary(summary);
+        } catch {
+          setWeatherSummary({
+            label: "Weather: cloudy",
+            icon: "☁️",
+            backgroundImage: "/cloudy_background.jpg",
+          });
+        }
+      },
+      () => {
+        setWeatherSummary({
+          label: "Weather: cloudy",
+          icon: "☁️",
+          backgroundImage: "/cloudy_background.jpg",
+        });
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
   }, []);
 
   function startRun() {
@@ -224,32 +317,7 @@ export default function ChaseRunner() {
     window.addEventListener("resize", resize);
 
     function drawSky(w: number, h: number) {
-      const img = bgImgRef.current;
-      if (img && img.complete && img.naturalWidth > 0) {
-        // Cover-fit the background image into the canvas, cropping
-        // whichever axis overflows so it never stretches/distorts.
-        const imgRatio = img.naturalWidth / img.naturalHeight;
-        const canvasRatio = w / h;
-        let drawW: number, drawH: number, dx: number, dy: number;
-
-        if (canvasRatio > imgRatio) {
-          drawW = w;
-          drawH = w / imgRatio;
-          dx = 0;
-          dy = (h - drawH) / 2;
-        } else {
-          drawH = h;
-          drawW = h * imgRatio;
-          dy = 0;
-          dx = (w - drawW) / 2;
-        }
-
-        ctx!.drawImage(img, dx, dy, drawW, drawH);
-      } else {
-        // Fallback while the image loads so there's no flash of black.
-        ctx!.fillStyle = "#0a1128";
-        ctx!.fillRect(0, 0, w, h);
-      }
+      ctx!.clearRect(0, 0, w, h);
     }
 
     function drawFarTrees(w: number, h: number, offset: number) {
@@ -594,6 +662,12 @@ export default function ChaseRunner() {
 
   return (
     <div style={styles.wrap}>
+      <div
+        style={{
+          ...styles.weatherBackdrop,
+          backgroundImage: `url(${weatherSummary.backgroundImage})`,
+        }}
+      />
       <canvas ref={canvasRef} style={styles.canvas} />
 
       <div style={styles.hud}>
@@ -604,10 +678,16 @@ export default function ChaseRunner() {
               <span style={styles.statValue}>{score}</span>
             </div>
             <div style={styles.statBox}>
+              <span style={styles.statLabel}>WEATHER</span>
+              <span style={styles.statValue}>
+                {weatherSummary.icon} {weatherSummary.label.replace("Weather: ", "")}
+              </span>
+            </div>
+            <div style={styles.statBox}>
               <span style={styles.statLabel}>SPEED</span>
               <span style={styles.statValue}>
                 {bleSpeed.toFixed(1)}
-                <span style={styles.statUnit}> km/h</span>
+                <span style={styles.statUnit}> m/s</span>
               </span>
             </div>
             <div style={styles.statBox}>
@@ -704,7 +784,17 @@ const styles: Record<string, React.CSSProperties> = {
     touchAction: "none",
     userSelect: "none",
   },
+  weatherBackdrop: {
+    position: "absolute",
+    inset: 0,
+    backgroundSize: "cover",
+    backgroundPosition: "center",
+    transform: "scale(1.02)",
+    filter: "blur(0.5px)",
+  },
   canvas: {
+    position: "relative",
+    zIndex: 1,
     width: "100%",
     height: "100%",
     display: "block",
@@ -747,11 +837,12 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#f2ead8aa",
   },
   statValue: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: 700,
     fontFamily: "monospace",
     color: "#fff7e6",
     textShadow: "0 2px 4px rgba(0,0,0,0.45)",
+    whiteSpace: "nowrap",
   },
   statUnit: {
     fontSize: 11,

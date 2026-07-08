@@ -328,14 +328,9 @@ const css = `
   background:repeating-linear-gradient(90deg, #3a2a1c 0 38px, #2c2014 38px 40px);
   border-top:2px solid #1a130c;
 }
-.dr-runner-wrap{ position:absolute; bottom:46px; left:50%; transform:translateX(-50%); width:38px; height:60px; z-index:6; }
-.dr-runner{ position:relative; width:100%; height:100%; animation: dr-bob 0.5s steps(2) infinite; }
-.dr-runner .dr-head{position:absolute; top:0; left:10px; width:16px; height:16px; background:#e7b27a; border-radius:3px;}
-.dr-runner .dr-hair{position:absolute; top:-2px; left:8px; width:18px; height:8px; background:#caa24a; border-radius:3px 3px 0 0;}
-.dr-runner .dr-body{position:absolute; top:16px; left:8px; width:20px; height:24px; background:#2f4a30; border-radius:3px;}
-.dr-runner .dr-bow{position:absolute; top:14px; left:26px; width:6px; height:26px; background:var(--ember); border-radius:3px;}
-.dr-runner .dr-leg{position:absolute; bottom:0; left:11px; width:6px; height:16px; background:#3a2a1c;}
-.dr-runner .dr-leg.r{left:21px;}
+.dr-runner-wrap{ position:absolute; bottom:46px; left:50%; transform:translateX(-50%); width:96px; height:96px; z-index:6; }
+.dr-runner{ position:relative; width:100%; height:100%; display:flex; align-items:center; justify-content:center; animation: dr-bob 0.5s steps(2) infinite; }
+.dr-hero-gif{ width:100%; height:100%; object-contain; image-rendering:pixelated; pointer-events:none; transform:translateY(4px); }
 @keyframes dr-bob{ 0%{transform:translateY(0);} 50%{transform:translateY(-3px);} 100%{transform:translateY(0);} }
 
 .dr-goblin{ position:absolute; bottom:46px; left:calc(50% - 90px); width:30px; height:48px; z-index:5; opacity:0.92; }
