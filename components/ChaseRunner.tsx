@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from "react";
 
 type Phase = "idle" | "running" | "caught";
 
+type WeatherSummary = {
+  label: string;
+  icon: string;
+  backgroundImage: string;
+};
+
 const GAP_MAX = 100;
 const GAP_START = 62;
 const CATCH_GAP = 0;
@@ -49,6 +55,11 @@ export default function ChaseRunner() {
   const [bleStatus, setBleStatus] = useState("Not connected");
   const [bleSpeed, setBleSpeed] = useState(0);
   const [bleDistance, setBleDistance] = useState(0);
+  const [weatherSummary, setWeatherSummary] = useState<WeatherSummary>({
+    label: "Weather: loading",
+    icon: "⛅",
+    backgroundImage: "/background.jpeg",
+  });
 
   // Load sprites once
   useEffect(() => {
@@ -60,6 +71,92 @@ export default function ChaseRunner() {
     villain.onload = () => (imagesReadyRef.current += 1);
     heroImgRef.current = hero;
     villainImgRef.current = villain;
+  }, []);
+
+  useEffect(() => {
+    // if (!navigator.geolocation) {
+    //   setWeatherSummary({
+    //     label: "Weather: cloudy",
+    //     icon: "☁️",
+    //     backgroundImage: "/cloudy_background.jpg",
+    //   });
+    //   return;
+    // }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+
+        try {
+          const response = await fetch(
+            `https://api.open-meteo.com/v1/forecast?latitude=${latitude.toFixed(4)}&longitude=${longitude.toFixed(4)}&current=temperature_2m,weather_code&timezone=auto`
+          );
+
+          if (!response.ok) {
+            throw new Error("Weather request failed");
+          }
+
+          const data = await response.json();
+          const weatherCode = data?.current?.weather_code;
+          const temperature = data?.current?.temperature_2m;
+
+          let summary: WeatherSummary = {
+            label: "Weather: cloudy",
+            icon: "☁️",
+            backgroundImage: "/cloudy_background.jpg",
+          };
+
+          if (typeof temperature === "number" && temperature < 8) {
+            summary = {
+              label: `Weather: cold (${Math.round(temperature)}°C)`,
+              icon: "🥶",
+              backgroundImage: "/cold_background.jpg",
+            };
+          } else if (weatherCode === 45 || weatherCode === 48) {
+            summary = {
+              label: "Weather: foggy",
+              icon: "🌫️",
+              backgroundImage: "/foggy_background.jpg",
+            };
+          } else if ([51, 53, 55, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 99].includes(weatherCode ?? -1)) {
+            summary = {
+              label: "Weather: rainy",
+              icon: "🌧️",
+              backgroundImage: "/rainy_background.jpg",
+            };
+          } else if ([0, 1, 2, 3].includes(weatherCode ?? -1)) {
+            summary = {
+              label: `Weather: cloudy (${Math.round(temperature ?? 0)}°C)`,
+              icon: "☁️",
+              backgroundImage: "/cloudy_background.jpg",
+            };
+          } else if (typeof temperature === "number") {
+            summary = {
+              label: `Weather: clear (${Math.round(temperature)}°C)`,
+              icon: "☀️",
+              backgroundImage: "/background.jpeg",
+            };
+          }
+
+          setWeatherSummary(summary);
+        } catch {
+          setWeatherSummary({
+            label: "Weather: cloudy",
+            icon: "☁️",
+            backgroundImage: "/cloudy_background.jpg",
+          });
+        }
+      },
+      () => {
+        setWeatherSummary({
+          label: "Weather: cloudy",
+          icon: "☁️",
+          backgroundImage: "/cloudy_background.jpg",
+        });
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
   }, []);
 
   function startRun() {
@@ -220,51 +317,7 @@ export default function ChaseRunner() {
     window.addEventListener("resize", resize);
 
     function drawSky(w: number, h: number) {
-      const g = ctx!.createLinearGradient(0, 0, 0, h);
-      g.addColorStop(0, "#0a1128");
-      g.addColorStop(0.55, "#142347");
-      g.addColorStop(1, "#2c3a5e");
-      ctx!.fillStyle = g;
-      ctx!.fillRect(0, 0, w, h);
-
-      // moon
-      const moonX = w * 0.82;
-      const moonY = h * 0.18;
-      const moonR = 30;
-      ctx!.save();
-      ctx!.globalAlpha = 0.25;
-      ctx!.fillStyle = "#fdf6e3";
-      ctx!.beginPath();
-      ctx!.arc(moonX, moonY, moonR * 1.8, 0, Math.PI * 2);
-      ctx!.fill();
-      ctx!.restore();
-      ctx!.fillStyle = "#fdf6e3";
-      ctx!.beginPath();
-      ctx!.arc(moonX, moonY, moonR, 0, Math.PI * 2);
-      ctx!.fill();
-      ctx!.fillStyle = "#e3dcc0";
-      ctx!.beginPath();
-      ctx!.arc(moonX - 8, moonY - 6, 5, 0, Math.PI * 2);
-      ctx!.fill();
-      ctx!.beginPath();
-      ctx!.arc(moonX + 10, moonY + 9, 3.5, 0, Math.PI * 2);
-      ctx!.fill();
-
-      // stars
-      ctx!.fillStyle = "#fdf6e3";
-      const starCount = 60;
-      for (let i = 0; i < starCount; i++) {
-        // deterministic pseudo-random placement so stars don't jitter each frame
-        const sx = (i * 137.5) % w;
-        const sy = (i * 71.3) % (h * 0.55);
-        const twinkle = 0.4 + Math.abs(Math.sin(i * 12.9898 + starTimeRef.current));
-        ctx!.globalAlpha = Math.min(1, twinkle) * 0.8;
-        const size = (i % 3 === 0) ? 1.6 : 1;
-        ctx!.beginPath();
-        ctx!.arc(sx, sy, size, 0, Math.PI * 2);
-        ctx!.fill();
-      }
-      ctx!.globalAlpha = 1;
+      ctx!.clearRect(0, 0, w, h);
     }
 
     function drawFarTrees(w: number, h: number, offset: number) {
@@ -303,35 +356,148 @@ export default function ChaseRunner() {
     }
 
     function drawGround(w: number, h: number, offset: number) {
-      const groundY = h * 0.72;
-      // grass
-      ctx!.fillStyle = "#1b2c1f";
-      ctx!.fillRect(0, groundY, w, h - groundY);
-      // worn dirt path band
-      const pathY = groundY + (h - groundY) * 0.35;
-      ctx!.fillStyle = "#4a4434";
-      ctx!.fillRect(0, pathY, w, h - pathY);
-      // path texture strokes
-      ctx!.strokeStyle = "rgba(20,18,12,0.5)";
-      ctx!.lineWidth = 3;
-      const spacing = 40;
-      const count = Math.ceil(w / spacing) + 2;
-      for (let i = -1; i < count; i++) {
-        const x = ((i * spacing - (offset % spacing)) + w) % (w + spacing) - spacing / 2;
-        ctx!.beginPath();
-        ctx!.moveTo(x, pathY + 6);
-        ctx!.lineTo(x + 14, h);
-        ctx!.stroke();
-      }
-      // grass tufts
-      ctx!.fillStyle = "#16271a";
-      const tuftSpacing = 26;
-      const tcount = Math.ceil(w / tuftSpacing) + 2;
-      for (let i = -1; i < tcount; i++) {
-        const x = ((i * tuftSpacing - (offset * 1.4 % tuftSpacing)) + w) % (w + tuftSpacing) - tuftSpacing / 2;
-        ctx!.fillRect(x, groundY - 4, 3, 8);
-      }
-    }
+  const groundY = h * 0.72;
+
+  // ---------- Grass gradient ----------
+  const grassGrad = ctx!.createLinearGradient(0, groundY, 0, h);
+  grassGrad.addColorStop(0, "#35552d");
+  grassGrad.addColorStop(0.4, "#294221");
+  grassGrad.addColorStop(1, "#182418");
+
+  ctx!.fillStyle = grassGrad;
+  ctx!.fillRect(0, groundY, w, h - groundY);
+
+  // Dark shadow at horizon
+  const shadowGrad = ctx!.createLinearGradient(
+    0,
+    groundY,
+    0,
+    groundY + 50
+  );
+  shadowGrad.addColorStop(0, "rgba(0,0,0,0.35)");
+  shadowGrad.addColorStop(1, "rgba(0,0,0,0)");
+
+  ctx!.fillStyle = shadowGrad;
+  ctx!.fillRect(0, groundY, w, 60);
+
+  // ---------- Dirt path ----------
+  const pathY = groundY + (h - groundY) * 0.33;
+
+  ctx!.beginPath();
+  ctx!.moveTo(0, pathY);
+
+  ctx!.quadraticCurveTo(
+    w * 0.25,
+    pathY - 8,
+    w * 0.5,
+    pathY + 6
+  );
+
+  ctx!.quadraticCurveTo(
+    w * 0.75,
+    pathY + 18,
+    w,
+    pathY + 5
+  );
+
+  ctx!.lineTo(w, h);
+  ctx!.lineTo(0, h);
+  ctx!.closePath();
+
+  const dirtGrad = ctx!.createLinearGradient(0, pathY, 0, h);
+  dirtGrad.addColorStop(0, "#6a5b43");
+  dirtGrad.addColorStop(0.6, "#4e4432");
+  dirtGrad.addColorStop(1, "#3c3427");
+
+  ctx!.fillStyle = dirtGrad;
+  ctx!.fill();
+
+  // ---------- Moving texture ----------
+  ctx!.strokeStyle = "rgba(30,25,18,0.25)";
+  ctx!.lineWidth = 2;
+
+  const spacing = 34;
+  const count = Math.ceil(w / spacing) + 2;
+
+  for (let i = -1; i < count; i++) {
+    const x =
+      ((i * spacing - (offset % spacing)) + w) %
+        (w + spacing) -
+      spacing / 2;
+
+    ctx!.beginPath();
+    ctx!.moveTo(x, pathY + 4);
+    ctx!.lineTo(x + 18, h);
+    ctx!.stroke();
+  }
+
+  // ---------- Grass blades ----------
+  ctx!.strokeStyle = "#4d7d42";
+  ctx!.lineWidth = 1;
+
+  const bladeSpacing = 8;
+
+  for (let i = -1; i < w / bladeSpacing + 2; i++) {
+    const x =
+      ((i * bladeSpacing - (offset * 1.3 % bladeSpacing)) + w) %
+      (w + bladeSpacing);
+
+    const height = 5 + (i % 4);
+
+    ctx!.beginPath();
+    ctx!.moveTo(x, groundY + 1);
+    ctx!.lineTo(x - 1, groundY - height);
+    ctx!.stroke();
+  }
+
+  // ---------- Small rocks ----------
+  ctx!.fillStyle = "#7c766d";
+
+  const rockSpacing = 120;
+
+  for (let i = -1; i < w / rockSpacing + 2; i++) {
+    const x =
+      ((i * rockSpacing - (offset * 0.6 % rockSpacing)) + w) %
+      (w + rockSpacing);
+
+    const y = pathY + 30 + ((i * 37) % 22);
+
+    ctx!.beginPath();
+    ctx!.ellipse(
+      x,
+      y,
+      5 + (i % 3),
+      3,
+      0,
+      0,
+      Math.PI * 2
+    );
+    ctx!.fill();
+  }
+
+  // ---------- Fallen leaves ----------
+  ctx!.fillStyle = "#a56a1d";
+
+  const leafSpacing = 70;
+
+  for (let i = -1; i < w / leafSpacing + 2; i++) {
+    const x =
+      ((i * leafSpacing - (offset * 0.8 % leafSpacing)) + w) %
+      (w + leafSpacing);
+
+    const y = groundY + 18 + ((i * 23) % 40);
+
+    ctx!.save();
+    ctx!.translate(x, y);
+    ctx!.rotate((i % 5) * 0.4);
+
+    ctx!.beginPath();
+    ctx!.ellipse(0, 0, 3, 1.5, 0, 0, Math.PI * 2);
+    ctx!.fill();
+
+    ctx!.restore();
+  }
+}
 
     function drawDust(w: number, h: number) {
       for (const d of dustRef.current) {
@@ -496,6 +662,12 @@ export default function ChaseRunner() {
 
   return (
     <div style={styles.wrap}>
+      <div
+        style={{
+          ...styles.weatherBackdrop,
+          backgroundImage: `url(${weatherSummary.backgroundImage})`,
+        }}
+      />
       <canvas ref={canvasRef} style={styles.canvas} />
 
       <div style={styles.hud}>
@@ -506,10 +678,16 @@ export default function ChaseRunner() {
               <span style={styles.statValue}>{score}</span>
             </div>
             <div style={styles.statBox}>
+              <span style={styles.statLabel}>WEATHER</span>
+              <span style={styles.statValue}>
+                {weatherSummary.icon} {weatherSummary.label.replace("Weather: ", "")}
+              </span>
+            </div>
+            <div style={styles.statBox}>
               <span style={styles.statLabel}>SPEED</span>
               <span style={styles.statValue}>
                 {bleSpeed.toFixed(1)}
-                <span style={styles.statUnit}> km/h</span>
+                <span style={styles.statUnit}> m/s</span>
               </span>
             </div>
             <div style={styles.statBox}>
@@ -606,7 +784,17 @@ const styles: Record<string, React.CSSProperties> = {
     touchAction: "none",
     userSelect: "none",
   },
+  weatherBackdrop: {
+    position: "absolute",
+    inset: 0,
+    backgroundSize: "cover",
+    backgroundPosition: "center",
+    transform: "scale(1.02)",
+    filter: "blur(0.5px)",
+  },
   canvas: {
+    position: "relative",
+    zIndex: 1,
     width: "100%",
     height: "100%",
     display: "block",
@@ -649,11 +837,12 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#f2ead8aa",
   },
   statValue: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: 700,
     fontFamily: "monospace",
     color: "#fff7e6",
     textShadow: "0 2px 4px rgba(0,0,0,0.45)",
+    whiteSpace: "nowrap",
   },
   statUnit: {
     fontSize: 11,
