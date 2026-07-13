@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Seer's Escape",
+  title: "Pragjyotishpur Tale",
   description: "Outrun the goblin through the shrine woods.",
 };
 
