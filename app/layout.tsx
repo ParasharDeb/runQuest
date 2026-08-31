@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Pragjyotishpur Tale",
-  description: "Outrun the goblin through the shrine woods.",
+  description: "Outrun the Asura through the shrine woods.",
 };
 
 export default function RootLayout({

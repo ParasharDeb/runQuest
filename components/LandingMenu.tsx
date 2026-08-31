@@ -18,6 +18,9 @@ export default function LandingMenu() {
   const [hoveredMap, setHoveredMap] = useState<MapTheme | null>(null);
   const [hoveredStoreItem, setHoveredStoreItem] = useState<any | null>(null);
   const [highScore, setHighScore] = useState<number>(0);
+  const [armourLevel, setArmourLevel] = useState<number>(1);
+  const [magnetLevel, setMagnetLevel] = useState<number>(1);
+  const [storeMessage, setStoreMessage] = useState<string | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const playHoverSfx = () => {
@@ -111,9 +114,9 @@ export default function LandingMenu() {
           if (focusIndex === 0) {
             setMenuState("setup");
           } else if (focusIndex === 1) {
-            setMenuState("store");
+            setMenuState("help");
           } else if (focusIndex === 2) {
-            alert("Settings coming soon!");
+            setMenuState("store");
           } else if (focusIndex === 3) {
             setMenuState("about");
           } else if (focusIndex === 4) {
@@ -210,17 +213,98 @@ export default function LandingMenu() {
         }
       } else if (menuState === "store") {
         const maxIndex = 3; // Item 0, Item 1, Item 2, RETURN
-        const storeItems = [
-          { name: "Royal Rampant Armour", price: 100, desc: "Immune to the obstacles", key: "royalrampant" },
-          { name: "Forest Ghat Map", price: 250, desc: "Unlock deep jungle biome", key: "forestghat" },
-          { name: "Magnet", price: 150, desc: "Autocollect near coins", key: "magnet" }
+        const ARMOUR_UPGRADES = [
+          { level: 1, duration: 15, collisions: 1, cost: 100 },
+          { level: 2, duration: 20, collisions: 2, cost: 250 },
+          { level: 3, duration: 25, collisions: 3, cost: 450 },
+          { level: 4, duration: 30, collisions: 4, cost: 700 },
+          { level: 5, duration: 35, collisions: 5, cost: 0 },
         ];
+        const MAGNET_UPGRADES = [
+          { level: 1, duration: 10, cost: 150 },
+          { level: 2, duration: 15, cost: 300 },
+          { level: 3, duration: 20, cost: 500 },
+          { level: 4, duration: 25, cost: 750 },
+          { level: 5, duration: 30, cost: 0 },
+        ];
+        const aStats = ARMOUR_UPGRADES[Math.min(armourLevel - 1, 4)];
+        const aNextStats = ARMOUR_UPGRADES[Math.min(armourLevel, 4)];
+        const mStats = MAGNET_UPGRADES[Math.min(magnetLevel - 1, 4)];
+        const mNextStats = MAGNET_UPGRADES[Math.min(magnetLevel, 4)];
+
+        const storeItems = [
+          {
+            name: armourLevel >= 5 ? `Royal Armour (MAX)` : `Royal Armour — Upgrade Lvl ${armourLevel}→${armourLevel + 1}`,
+            price: armourLevel >= 5 ? "MAX" : `${aNextStats.cost}₹`,
+            desc: armourLevel >= 5
+              ? `⏱️ ${aStats.duration}s Full Immunity`
+              : `Now: ${aStats.duration}s → Next: ${aNextStats.duration}s full immunity`,
+            key: "royalrampant"
+          },
+          {
+            name: "Forest Ghat Map",
+            price: "250₹",
+            desc: "Unlock deep jungle biome",
+            key: "forestghat"
+          },
+          {
+            name: magnetLevel >= 5 ? `Magnet (MAX)` : `Magnet — Upgrade Lvl ${magnetLevel}→${magnetLevel + 1}`,
+            price: magnetLevel >= 5 ? "MAX" : `${mNextStats.cost}₹`,
+            desc: magnetLevel >= 5
+              ? `⏱️ ${mStats.duration}s Timer | 🧲 Autocollect Coins`
+              : `Now: ${mStats.duration}s → Next: ${mNextStats.duration}s | 🧲 Autocollect Coins`,
+            key: "magnet"
+          }
+        ];
+
+        const executePurchase = (idx: number) => {
+          if (idx === 0) {
+            if (armourLevel >= 5) {
+              setStoreMessage("Royal Armour is already MAX level!");
+              return;
+            }
+            const cost = aNextStats.cost;
+            if (lifetimeCoins >= cost) {
+              const newCoins = lifetimeCoins - cost;
+              const newLevel = armourLevel + 1;
+              setLifetimeCoins(newCoins);
+              setArmourLevel(newLevel);
+              localStorage.setItem("lifetimeCoins", newCoins.toString());
+              localStorage.setItem("armourLevel", newLevel.toString());
+              playClickSfx();
+              const next = ARMOUR_UPGRADES[newLevel - 1];
+              setStoreMessage(`✨ Upgraded Armour to Lvl ${newLevel}! (${next.duration}s timer, ${next.collisions} hits)`);
+            } else {
+              setStoreMessage(`❌ Need ${cost}₹! You have ${lifetimeCoins}₹`);
+            }
+          } else if (idx === 2) {
+            if (magnetLevel >= 5) {
+              setStoreMessage("Magnet is already MAX level!");
+              return;
+            }
+            const cost = mNextStats.cost;
+            if (lifetimeCoins >= cost) {
+              const newCoins = lifetimeCoins - cost;
+              const newLevel = magnetLevel + 1;
+              setLifetimeCoins(newCoins);
+              setMagnetLevel(newLevel);
+              localStorage.setItem("lifetimeCoins", newCoins.toString());
+              localStorage.setItem("magnetLevel", newLevel.toString());
+              playClickSfx();
+              const next = MAGNET_UPGRADES[newLevel - 1];
+              setStoreMessage(`✨ Upgraded Magnet to Lvl ${newLevel}! (${next.duration}s timer)`);
+            } else {
+              setStoreMessage(`❌ Need ${cost}₹! You have ${lifetimeCoins}₹`);
+            }
+          } else if (idx === 1) {
+            setStoreMessage("🌴 Forest Ghat Map is unlocked by default!");
+          }
+        };
 
         if (e.key === "ArrowDown") {
           setFocusIndex((prev) => {
             const next = prev < maxIndex ? prev + 1 : 0;
             playHoverSfx();
-            // Set hover item accordingly
             if (next >= 0 && next <= 2) {
               setHoveredStoreItem(storeItems[next]);
             } else {
@@ -240,11 +324,11 @@ export default function LandingMenu() {
             return next;
           });
         } else if (e.key === "Enter") {
-          playClickSfx();
           if (focusIndex === 3) {
+            playClickSfx();
             setMenuState("main");
           } else {
-            alert(`Purchasing ${storeItems[focusIndex].name} is coming soon!`);
+            executePurchase(focusIndex);
           }
         } else if (e.key === "Escape") {
           playClickSfx();
@@ -273,6 +357,14 @@ export default function LandingMenu() {
       const savedBest = localStorage.getItem("highScore");
       if (savedBest) {
         setHighScore(parseInt(savedBest, 10));
+      }
+      const savedArmour = localStorage.getItem("armourLevel");
+      if (savedArmour) {
+        setArmourLevel(Math.max(1, parseInt(savedArmour, 10)));
+      }
+      const savedMagnet = localStorage.getItem("magnetLevel");
+      if (savedMagnet) {
+        setMagnetLevel(Math.max(1, parseInt(savedMagnet, 10)));
       }
     }
   }, []);
@@ -547,14 +639,12 @@ export default function LandingMenu() {
                       playHoverSfx();
                     }}
                     style={{
-                      background: idx === 0
+                      background: isFocused
                         ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
                         : "rgba(0,0,0,0.45)",
                       border: isFocused
                         ? "2px solid #d4af37"
-                        : idx === 0
-                          ? "1px solid rgba(212,175,55,0.45)"
-                          : "1px solid rgba(212,175,55,0.22)",
+                        : "1px solid rgba(212,175,55,0.22)",
                       boxShadow: isFocused ? "0 0 12px rgba(212, 175, 55, 0.5)" : "none",
                       transform: isFocused ? "scale(1.05) translateX(4px)" : "scale(1) translateX(0px)",
                       padding: "14px 28px",
@@ -602,9 +692,13 @@ export default function LandingMenu() {
                         }}
                         onMouseEnter={() => {
                           setFocusIndex(0);
+                          setChoiceActive(true);
+                          setChoiceSubIndex(subIdx);
                         }}
                         style={{
-                          background: isSelected ? "rgba(139,30,15,0.22)" : "rgba(0,0,0,0.35)",
+                          background: isSubChoiceHighlighted
+                            ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
+                            : isSelected ? "rgba(139,30,15,0.22)" : "rgba(0,0,0,0.35)",
                           border: isSubChoiceHighlighted
                             ? "2px solid #ffd700"
                             : isSelected
@@ -654,9 +748,13 @@ export default function LandingMenu() {
                         }}
                         onMouseEnter={() => {
                           setFocusIndex(1);
+                          setChoiceActive(true);
+                          setChoiceSubIndex(subIdx);
                         }}
                         style={{
-                          background: isSelected ? "rgba(139,30,15,0.22)" : "rgba(0,0,0,0.35)",
+                          background: isSubChoiceHighlighted
+                            ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
+                            : isSelected ? "rgba(139,30,15,0.22)" : "rgba(0,0,0,0.35)",
                           border: isSubChoiceHighlighted
                             ? "2px solid #ffd700"
                             : isSelected
@@ -694,11 +792,27 @@ export default function LandingMenu() {
               {/* Single Journey Map — Pragjyotishpur */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 5, alignItems: "flex-start" }}>
                   <div
+                    onMouseEnter={() => {
+                      setFocusIndex(2);
+                      setHoveredMap("background");
+                    }}
+                    onMouseLeave={() => {
+                      setHoveredMap(null);
+                    }}
+                    onClick={() => {
+                      setSelectedMap("background");
+                      playClickSfx();
+                      setFocusIndex(3);
+                    }}
                     style={{
-                      background: "rgba(139,30,15,0.22)",
-                      border: "1px solid #d4af37",
+                      background: focusIndex === 2
+                        ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
+                        : "rgba(139,30,15,0.22)",
+                      border: focusIndex === 2 ? "2px solid #d4af37" : "1px solid #d4af37",
+                      boxShadow: focusIndex === 2 ? "0 0 12px rgba(212, 175, 55, 0.4)" : "none",
+                      transform: focusIndex === 2 ? "scale(1.05) translateX(4px)" : "scale(1) translateX(0px)",
                       padding: "10px 22px",
-                      color: "#d4af37",
+                      color: focusIndex === 2 ? "#ffffff" : "#d4af37",
                       fontSize: "15px",
                       fontWeight: 700,
                       fontFamily: "'Cinzel', serif",
@@ -707,13 +821,12 @@ export default function LandingMenu() {
                       width: "240px",
                       textAlign: "left",
                       borderRadius: "4px",
+                      cursor: "pointer",
+                      transition: "all 0.2s ease",
                     }}
                   >
                     Pragjyotishpur ✦
                   </div>
-                  <span style={{ fontSize: 11, color: "rgba(212,175,55,0.55)", fontFamily: "'Cinzel', serif", letterSpacing: "1px", paddingLeft: 4 }}>
-                    AEC → Lachit Ghat → Forest → Sumato → Khanapara
-                  </span>
                 </div>
               </div>
 
@@ -738,14 +851,12 @@ export default function LandingMenu() {
                         playHoverSfx();
                       }}
                       style={{
-                        background: btn.isPrimary
+                        background: isFocused
                           ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
                           : "rgba(0,0,0,0.45)",
                         border: isFocused
                           ? "2px solid #d4af37"
-                          : btn.isPrimary
-                            ? "1px solid rgba(212,175,55,0.45)"
-                            : "1px solid rgba(212,175,55,0.22)",
+                          : "1px solid rgba(212,175,55,0.22)",
                         boxShadow: isFocused ? "0 0 12px rgba(212, 175, 55, 0.4)" : "none",
                         transform: isFocused ? "scale(1.05) translateX(4px)" : "scale(1) translateX(0px)",
                         padding: "13px 26px",
@@ -770,54 +881,159 @@ export default function LandingMenu() {
             </div>
           ) : menuState === "store" ? (
             /* Store page inside Sidebar */
-            <div style={{ display: "flex", flexDirection: "column", gap: 16, alignItems: "flex-start", width: "100%" }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4, width: "100%", alignItems: "flex-start" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14, alignItems: "flex-start", width: "100%" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "260px" }}>
                 <span style={{ fontSize: 10, color: "rgba(212,175,55,0.7)", fontWeight: 700, letterSpacing: "2px", fontFamily: "'Cinzel', serif" }}>THE BAZAAR</span>
-                <div style={{ width: "200px", height: "1px", background: "rgba(212,175,55,0.35)", margin: "4px 0 10px 0" }} />
+                <span style={{ fontSize: 12, color: "#ffd700", fontWeight: 700, fontFamily: "'Cinzel', serif" }}>💰 {lifetimeCoins}₹</span>
               </div>
+              <div style={{ width: "260px", height: "1px", background: "rgba(212,175,55,0.35)", margin: "-4px 0 4px 0" }} />
+
+              {storeMessage && (
+                <div style={{
+                  fontSize: 10,
+                  color: "#ffd700",
+                  fontFamily: "'Segoe UI', sans-serif",
+                  background: "rgba(0, 0, 0, 0.6)",
+                  padding: "6px 10px",
+                  borderRadius: "4px",
+                  border: "1px solid rgba(212,175,55,0.3)",
+                  width: "260px",
+                  boxSizing: "border-box",
+                  textAlign: "left"
+                }}>
+                  {storeMessage}
+                </div>
+              )}
 
               {/* List of Store items — rectangular bordered cards */}
               <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
-                {[
-                  { name: "Royal Rampant Armour", price: 100, desc: "Immune to the obstacles", key: "royalrampant" },
-                  { name: "Forest Ghat Map", price: 250, desc: "Unlock deep jungle biome", key: "forestghat" },
-                  { name: "Magnet", price: 150, desc: "Autocollect near coins", key: "magnet" }
-                ].map((item, idx) => {
-                  const isFocused = focusIndex === idx;
-                  return (
-                    <div
-                      key={idx}
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        cursor: "pointer",
-                        width: "260px",
-                        padding: "12px 20px",
-                        background: isFocused ? "rgba(212,175,55,0.08)" : "rgba(0,0,0,0.45)",
-                        border: isFocused ? "2px solid #d4af37" : "1px solid rgba(212,175,55,0.22)",
-                        boxShadow: isFocused ? "0 0 12px rgba(212, 175, 55, 0.4)" : "none",
-                        transform: isFocused ? "scale(1.05) translateX(4px)" : "scale(1) translateX(0px)",
-                        transition: "all 0.2s ease",
-                        boxSizing: "border-box",
-                        borderRadius: "6px",
-                      }}
-                      onMouseEnter={() => {
-                        setFocusIndex(idx);
-                        setHoveredStoreItem(item);
-                        playHoverSfx();
-                      }}
-                    >
-                      <div style={{ display: "flex", flexDirection: "column", gap: 2, textAlign: "left" }}>
-                        <span className="item-title" style={{ fontSize: 12.5, fontWeight: 700, color: isFocused ? "#d4af37" : "#fff", fontFamily: "'Cinzel', serif", letterSpacing: "1px", textTransform: "uppercase", transition: "color 0.2s ease" }}>{item.name}</span>
-                        <span style={{ fontSize: 9.5, color: "rgba(255, 255, 255, 0.5)", fontFamily: "'Segoe UI', sans-serif", letterSpacing: "0.5px" }}>{item.desc}</span>
+                {(() => {
+                  const ARMOUR_UPGRADES = [
+                    { level: 1, duration: 15, collisions: 1, cost: 100 },
+                    { level: 2, duration: 20, collisions: 2, cost: 250 },
+                    { level: 3, duration: 25, collisions: 3, cost: 450 },
+                    { level: 4, duration: 30, collisions: 4, cost: 700 },
+                    { level: 5, duration: 35, collisions: 5, cost: 0 },
+                  ];
+                  const MAGNET_UPGRADES = [
+                    { level: 1, duration: 10, cost: 150 },
+                    { level: 2, duration: 15, cost: 300 },
+                    { level: 3, duration: 20, cost: 500 },
+                    { level: 4, duration: 25, cost: 750 },
+                    { level: 5, duration: 30, cost: 0 },
+                  ];
+                  const aStats = ARMOUR_UPGRADES[Math.min(armourLevel - 1, 4)];
+                  const aNextStats = ARMOUR_UPGRADES[Math.min(armourLevel, 4)];
+                  const mStats = MAGNET_UPGRADES[Math.min(magnetLevel - 1, 4)];
+                  const mNextStats = MAGNET_UPGRADES[Math.min(magnetLevel, 4)];
+
+                  const itemsList = [
+                    {
+                      name: armourLevel >= 5 ? `Royal Armour (MAX)` : `Royal Armour — Upgrade Lvl ${armourLevel}→${armourLevel + 1}`,
+                      price: armourLevel >= 5 ? "MAX" : `${aNextStats.cost}₹`,
+                      desc: armourLevel >= 5
+                        ? `⏱️ ${aStats.duration}s Full Immunity`
+                        : `Now: ${aStats.duration}s → Next: ${aNextStats.duration}s full immunity`,
+                      key: "royalrampant"
+                    },
+                    {
+                      name: "Forest Ghat Map",
+                      price: "250₹",
+                      desc: "Unlock deep jungle biome",
+                      key: "forestghat"
+                    },
+                    {
+                      name: magnetLevel >= 5 ? `Magnet (MAX)` : `Magnet — Upgrade Lvl ${magnetLevel}→${magnetLevel + 1}`,
+                      price: magnetLevel >= 5 ? "MAX" : `${mNextStats.cost}₹`,
+                      desc: magnetLevel >= 5
+                        ? `⏱️ ${mStats.duration}s Timer | 🧲 Autocollect Coins`
+                        : `Now: ${mStats.duration}s → Next: ${mNextStats.duration}s | 🧲 Autocollect Coins`,
+                      key: "magnet"
+                    }
+                  ];
+
+                  const triggerPurchase = (idx: number) => {
+                    if (idx === 0) {
+                      if (armourLevel >= 5) {
+                        setStoreMessage("Royal Armour is already MAX level!");
+                        return;
+                      }
+                      const cost = aNextStats.cost;
+                      if (lifetimeCoins >= cost) {
+                        const newCoins = lifetimeCoins - cost;
+                        const newLevel = armourLevel + 1;
+                        setLifetimeCoins(newCoins);
+                        setArmourLevel(newLevel);
+                        localStorage.setItem("lifetimeCoins", newCoins.toString());
+                        localStorage.setItem("armourLevel", newLevel.toString());
+                        playClickSfx();
+                        const next = ARMOUR_UPGRADES[newLevel - 1];
+                        setStoreMessage(`✨ Upgraded Armour to Lvl ${newLevel}! (${next.duration}s timer, ${next.collisions} hits)`);
+                      } else {
+                        setStoreMessage(`❌ Need ${cost}₹! You have ${lifetimeCoins}₹`);
+                      }
+                    } else if (idx === 2) {
+                      if (magnetLevel >= 5) {
+                        setStoreMessage("Magnet is already MAX level!");
+                        return;
+                      }
+                      const cost = mNextStats.cost;
+                      if (lifetimeCoins >= cost) {
+                        const newCoins = lifetimeCoins - cost;
+                        const newLevel = magnetLevel + 1;
+                        setLifetimeCoins(newCoins);
+                        setMagnetLevel(newLevel);
+                        localStorage.setItem("lifetimeCoins", newCoins.toString());
+                        localStorage.setItem("magnetLevel", newLevel.toString());
+                        playClickSfx();
+                        const next = MAGNET_UPGRADES[newLevel - 1];
+                        setStoreMessage(`✨ Upgraded Magnet to Lvl ${newLevel}! (${next.duration}s timer)`);
+                      } else {
+                        setStoreMessage(`❌ Need ${cost}₹! You have ${lifetimeCoins}₹`);
+                      }
+                    } else if (idx === 1) {
+                      setStoreMessage("🌴 Forest Ghat Map is unlocked by default!");
+                    }
+                  };
+
+                  return itemsList.map((item, idx) => {
+                    const isFocused = focusIndex === idx;
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          cursor: "pointer",
+                          width: "260px",
+                          padding: "10px 16px",
+                          background: isFocused ? "rgba(212,175,55,0.12)" : "rgba(0,0,0,0.45)",
+                          border: isFocused ? "2px solid #d4af37" : "1px solid rgba(212,175,55,0.22)",
+                          boxShadow: isFocused ? "0 0 12px rgba(212, 175, 55, 0.4)" : "none",
+                          transform: isFocused ? "scale(1.05) translateX(4px)" : "scale(1) translateX(0px)",
+                          transition: "all 0.2s ease",
+                          boxSizing: "border-box",
+                          borderRadius: "6px",
+                        }}
+                        onMouseEnter={() => {
+                          setFocusIndex(idx);
+                          setHoveredStoreItem(item);
+                          playHoverSfx();
+                        }}
+                        onClick={() => triggerPurchase(idx)}
+                      >
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2, textAlign: "left" }}>
+                          <span className="item-title" style={{ fontSize: 11.5, fontWeight: 700, color: isFocused ? "#d4af37" : "#fff", fontFamily: "'Cinzel', serif", letterSpacing: "1px", textTransform: "uppercase", transition: "color 0.2s ease" }}>{item.name}</span>
+                          <span style={{ fontSize: 9.5, color: "rgba(255, 255, 255, 0.65)", fontFamily: "'Segoe UI', sans-serif", letterSpacing: "0.5px" }}>{item.desc}</span>
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: "#d4af37", fontFamily: "'Cinzel', serif", marginLeft: 8, flexShrink: 0 }}>
+                          {item.price}
+                        </span>
                       </div>
-                      <span style={{ fontSize: 12.5, fontWeight: 700, color: "#d4af37", fontFamily: "'Cinzel', serif", marginLeft: 8, flexShrink: 0 }}>
-                        {item.price}₹
-                      </span>
-                    </div>
-                  );
-                })}
+                    );
+                  });
+                })()}
               </div>
 
               {/* Return to main menu */}
@@ -1033,7 +1249,7 @@ export default function LandingMenu() {
             lineHeight: "1.4",
             textAlign: "left"
           }}>
-            A single epic journey through all of Pragjyotishpura — from AEC and Kamakhya to Lachit Ghat, through the Forest, past Sumato Campus, and finally to the hills of Khanapara.
+            A single epic journey through all of Pragjyotishpur — from the ancient gates to the hills of Khanapara.
           </p>
         </div>
       )}
@@ -1054,26 +1270,30 @@ export default function LandingMenu() {
           width: "min(360px, 90vw)",
           display: "flex",
           flexDirection: "column",
-          gap: "12px",
+          gap: "10px",
           pointerEvents: "none",
           animation: "fadeIn 0.25s ease-out forwards",
         }}>
-          <h4 style={{
-            margin: 0,
-            fontSize: 14,
-            fontFamily: "'Cinzel', serif",
-            color: "#d4af37",
-            letterSpacing: "1px",
-            textTransform: "uppercase",
-            borderBottom: "1px solid rgba(212, 175, 55, 0.2)",
-            paddingBottom: "6px",
-            textAlign: "left"
-          }}>
-            {hoveredStoreItem.name} {hoveredStoreItem.key === "royalrampant" && "(Coming Soon)"}
-          </h4>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(212, 175, 55, 0.2)", paddingBottom: "6px" }}>
+            <h4 style={{
+              margin: 0,
+              fontSize: 14,
+              fontFamily: "'Cinzel', serif",
+              color: "#d4af37",
+              letterSpacing: "1px",
+              textTransform: "uppercase",
+              textAlign: "left"
+            }}>
+              {hoveredStoreItem.name}
+            </h4>
+            <span style={{ fontSize: 10, color: "#ffd700", fontWeight: 700, fontFamily: "'Cinzel', serif" }}>
+              {hoveredStoreItem.price}
+            </span>
+          </div>
+
           <div style={{
             width: "100%",
-            height: "180px",
+            height: "170px",
             borderRadius: "6px",
             background: `rgba(0, 0, 0, 0.4) url(${hoveredStoreItem.key === "royalrampant"
               ? "/sprites/Powerups/royalrampant_armour.png"
@@ -1083,15 +1303,69 @@ export default function LandingMenu() {
               }) center center / contain no-repeat`,
             border: "1px solid rgba(255, 255, 255, 0.15)",
           }} />
+
+          {/* Detailed stats for Armour & Magnet */}
+          {hoveredStoreItem.key === "royalrampant" && (() => {
+            const ARMOUR_UPGRADES = [
+              { level: 1, duration: 15, collisions: 1, cost: 100 },
+              { level: 2, duration: 20, collisions: 2, cost: 250 },
+              { level: 3, duration: 25, collisions: 3, cost: 450 },
+              { level: 4, duration: 30, collisions: 4, cost: 700 },
+              { level: 5, duration: 35, collisions: 5, cost: 0 },
+            ];
+            const cur = ARMOUR_UPGRADES[Math.min(armourLevel - 1, 4)];
+            const nxt = armourLevel < 5 ? ARMOUR_UPGRADES[armourLevel] : null;
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, background: "rgba(0,0,0,0.4)", padding: "8px 10px", borderRadius: "6px", border: "1px solid rgba(212,175,55,0.2)" }}>
+                <div style={{ fontSize: 11, color: "#00bfff", fontFamily: "'Cinzel', serif", fontWeight: 700 }}>
+                  🛡️ ROYAL ARMOUR — LEVEL {armourLevel} / 5
+                </div>
+                <div style={{ fontSize: 10.5, color: "#ffffff", fontFamily: "'Segoe UI', sans-serif" }}>
+                  ⏱️ <b>Active Timer</b>: {cur.duration}s {nxt ? <span style={{ color: "#00ffcc" }}>➔ {nxt.duration}s</span> : "(MAX)"}
+                </div>
+                <div style={{ fontSize: 10.5, color: "#ffffff", fontFamily: "'Segoe UI', sans-serif" }}>
+                  🛡️ <b>Collisions Allowed</b>: {cur.collisions} {cur.collisions === 1 ? "Hit" : "Hits"} {nxt ? <span style={{ color: "#00ffcc" }}>➔ {nxt.collisions} Hits</span> : "(MAX)"}
+                </div>
+              </div>
+            );
+          })()}
+
+          {hoveredStoreItem.key === "magnet" && (() => {
+            const MAGNET_UPGRADES = [
+              { level: 1, duration: 10, cost: 150 },
+              { level: 2, duration: 15, cost: 300 },
+              { level: 3, duration: 20, cost: 500 },
+              { level: 4, duration: 25, cost: 750 },
+              { level: 5, duration: 30, cost: 0 },
+            ];
+            const cur = MAGNET_UPGRADES[Math.min(magnetLevel - 1, 4)];
+            const nxt = magnetLevel < 5 ? MAGNET_UPGRADES[magnetLevel] : null;
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, background: "rgba(0,0,0,0.4)", padding: "8px 10px", borderRadius: "6px", border: "1px solid rgba(225,95,202,0.2)" }}>
+                <div style={{ fontSize: 11, color: "#e15fca", fontFamily: "'Cinzel', serif", fontWeight: 700 }}>
+                  🧲 MAGNET — LEVEL {magnetLevel} / 5
+                </div>
+                <div style={{ fontSize: 10.5, color: "#ffffff", fontFamily: "'Segoe UI', sans-serif" }}>
+                  ⏱️ <b>Active Timer</b>: {cur.duration}s {nxt ? <span style={{ color: "#00ffcc" }}>➔ {nxt.duration}s</span> : "(MAX)"}
+                </div>
+              </div>
+            );
+          })()}
+
           <p style={{
             margin: 0,
-            fontSize: 11,
+            fontSize: 10.5,
             color: "#f5ebcf",
             fontFamily: "'Segoe UI', sans-serif",
             lineHeight: "1.4",
             textAlign: "left"
           }}>
-            {hoveredStoreItem.desc}
+            {hoveredStoreItem.key === "royalrampant"
+              ? "Protects you from obstacle and bow/arrow collisions. Breaks once the allowed collisions are exhausted."
+              : hoveredStoreItem.key === "magnet"
+                ? "Pulls all gold coins on screen toward the hero while active."
+                : hoveredStoreItem.desc
+            }
           </p>
         </div>
       )}

@@ -3,11 +3,27 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
-type Phase = "idle" | "running" | "paused" | "caught";
+type Phase = "idle" | "running" | "paused" | "caught" | "victory";
 
 const GAP_MAX = 100;
 const GAP_START = 62;
 const CATCH_GAP = 0;
+
+export const ARMOUR_UPGRADES = [
+  { level: 1, duration: 15, cost: 100 },
+  { level: 2, duration: 20, cost: 250 },
+  { level: 3, duration: 25, cost: 450 },
+  { level: 4, duration: 30, cost: 700 },
+  { level: 5, duration: 35, cost: 0 },
+];
+
+export const MAGNET_UPGRADES = [
+  { level: 1, duration: 10, cost: 150 },
+  { level: 2, duration: 15, cost: 300 },
+  { level: 3, duration: 20, cost: 500 },
+  { level: 4, duration: 25, cost: 750 },
+  { level: 5, duration: 30, cost: 0 },
+];
 
 // --- BLE treadmill telemetry ---
 const BLE_SERVICE_UUID = "12345678-0000-1000-8000-00805f9b34fb";
@@ -195,6 +211,28 @@ export default function ChaseRunner({
     }
   };
 
+  const playClickSfx = () => {
+    if (typeof window === "undefined") return;
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    try {
+      const ctx = new AudioContextClass();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(800, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.12, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.12);
+    } catch (e) {
+      console.warn(e);
+    }
+  };
+
   const playShieldBlockSfx = () => {
     if (typeof window === "undefined") return;
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
@@ -255,32 +293,32 @@ export default function ChaseRunner({
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
         const filter = ctx.createBiquadFilter();
-        
+
         osc.type = "sawtooth";
         osc.frequency.setValueAtTime(freq, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(freq * 0.5, ctx.currentTime + duration);
-        
+
         filter.type = "bandpass";
         filter.frequency.setValueAtTime(450, ctx.currentTime);
         filter.Q.setValueAtTime(4.0, ctx.currentTime);
-        
+
         // Connect ring modulator for throat raspiness
         const raspOsc = ctx.createOscillator();
         const raspGain = ctx.createGain();
         raspOsc.frequency.setValueAtTime(75, ctx.currentTime);
         raspGain.gain.setValueAtTime(freq * 0.45, ctx.currentTime);
-        
+
         raspOsc.connect(raspGain);
         raspGain.connect(osc.frequency);
-        
+
         gain.gain.setValueAtTime(0.0, ctx.currentTime);
         gain.gain.linearRampToValueAtTime(0.55, ctx.currentTime + 0.05);
         gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
-        
+
         osc.connect(filter);
         filter.connect(gain);
         gain.connect(ctx.destination);
-        
+
         osc.start();
         raspOsc.start();
         osc.stop(ctx.currentTime + duration);
@@ -331,6 +369,12 @@ export default function ChaseRunner({
   const deathReasonRef = useRef<"asura" | "obstacle" | "archer" | "arrow">("asura");
   const [gapDisplay, setGapDisplay] = useState(GAP_START);
 
+  const [devMode, setDevMode] = useState<boolean>(false);
+  const devModeRef = useRef<boolean>(false);
+  useEffect(() => {
+    devModeRef.current = devMode;
+  }, [devMode]);
+
   const modeRef = useRef(mode);
   const mapRef = useRef(map);
   const controlRef = useRef(control);
@@ -368,9 +412,9 @@ export default function ChaseRunner({
   const currentSpeedRef = useRef(0);
   const [lifetimeCoins, setLifetimeCoins] = useState(0);
 
-  const [overlaySelection, setOverlaySelection] = useState<"left" | "right">("left");
-  const overlaySelectionRef = useRef<"left" | "right">("left");
-  const updateOverlaySelection = (val: "left" | "right") => {
+  const [overlaySelection, setOverlaySelection] = useState<"left" | "middle" | "right">("left");
+  const overlaySelectionRef = useRef<"left" | "middle" | "right">("left");
+  const updateOverlaySelection = (val: "left" | "middle" | "right") => {
     overlaySelectionRef.current = val;
     setOverlaySelection(val);
   };
@@ -390,6 +434,14 @@ export default function ChaseRunner({
       const savedBest = localStorage.getItem("highScore");
       if (savedBest) {
         setBest(parseInt(savedBest, 10));
+      }
+      const savedArmour = localStorage.getItem("armourLevel");
+      if (savedArmour) {
+        armourLevelRef.current = Math.max(1, parseInt(savedArmour, 10));
+      }
+      const savedMagnet = localStorage.getItem("magnetLevel");
+      if (savedMagnet) {
+        magnetLevelRef.current = Math.max(1, parseInt(savedMagnet, 10));
       }
     }
   }, []);
@@ -417,6 +469,8 @@ export default function ChaseRunner({
   const lastWeatherScoreRef = useRef(0);
   const weatherTimerRef = useRef(0);
   const weatherDurationRef = useRef(0);
+  // Whether rain should fall during the current overcast phase (randomised each time overcast activates)
+  const rainOnOvercastRef = useRef(false);
 
   // Power Up state structures
   const nextPowerUpScoreRef = useRef(150);
@@ -426,10 +480,15 @@ export default function ChaseRunner({
   const scoreBonusRef = useRef(0);
   const [armourTime, setArmourTime] = useState(0);
   const armourTimerRef = useRef(0);
+  const armourMaxTimeRef = useRef(15.0);
   const armourSpawnTimerRef = useRef(0);
+  const armourLevelRef = useRef(1);
+
   const [magnetTime, setMagnetTime] = useState(0);
   const magnetTimerRef = useRef(0);
+  const magnetMaxTimeRef = useRef(10.0);
   const magnetSpawnTimerRef = useRef(0);
+  const magnetLevelRef = useRef(1);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -440,6 +499,7 @@ export default function ChaseRunner({
   const holdingRef = useRef(false);
   const gapRef = useRef(GAP_START);
   const scoreRef = useRef(0);
+  const rawScoreRef = useRef(0);
   const elapsedRef = useRef(0);
   const runCycleRef = useRef(0);
   const difficultyRef = useRef(1);
@@ -469,9 +529,11 @@ export default function ChaseRunner({
     "/sprites/Prince/prince4.png",
   ];
   // Portal smoke transition refs
-  const portalStateRef = useRef<"none" | "in" | "out">("none");
+  const portalStateRef = useRef<"none" | "in" | "black" | "out">("none");
   const portalProgressRef = useRef(0); // 0→1 for "in", 1→0 for "out"
   const pendingNextStageRef = useRef(-1); // stage to switch to at smoke peak
+  const zoneBgStartOffsetRef = useRef(0); // groundOffset when current zone started
+  const portalBlackTimerRef = useRef(0); // duration of full-black phase
   const heroStandingFrame = "/sprites/Prince/Prince_standing.png";
   const tiredHeroFrame = "/sprites/Prince/Prince_tired.png";
   const heroSlidingFrame = "/sprites/Prince/prince_sliding.png";
@@ -603,13 +665,16 @@ export default function ChaseRunner({
     const audio = audioRef.current;
     if (!audio) return;
 
-    if (audio.paused) {
-      audio.currentTime = 0;
-      void audio.play().catch(() => {});
-    }
+    audio.volume = 0.5;
+    audio.currentTime = 0;
+    void audio.play().catch(() => { });
   }
 
   function startRun() {
+    if (scoreRef.current > 0 || coinsCountRef.current > 0) {
+      saveHighScore(scoreRef.current);
+      saveLifetimeCoins(coinsCountRef.current);
+    }
     gapRef.current = GAP_START;
     scoreRef.current = 0;
     elapsedRef.current = 0;
@@ -669,6 +734,11 @@ export default function ChaseRunner({
     scoreBonusRef.current = 0;
     // Always start from stage 0 of the journey
     journeyStageRef.current = 0;
+    portalStateRef.current = "none";
+    portalProgressRef.current = 0;
+    pendingNextStageRef.current = -1;
+    zoneBgStartOffsetRef.current = 0;
+    portalBlackTimerRef.current = 0;
     const initialKey = "standard";
     startingBgKeyRef.current = initialKey;
     currentWeatherRef.current = initialKey;
@@ -679,6 +749,7 @@ export default function ChaseRunner({
     if (initialImg) bgImgRef.current = initialImg;
 
     setScore(0);
+    rawScoreRef.current = 0;
     setGapDisplay(GAP_START);
     setBleDistance(0);
     phaseRef.current = "running";
@@ -699,20 +770,31 @@ export default function ChaseRunner({
     if (phaseRef.current !== "paused") return;
     phaseRef.current = "running";
     setPhase("running");
-    playMusic();
+    if (audioRef.current) {
+      audioRef.current.volume = 0.5;
+      void audioRef.current.play().catch(() => {});
+    }
   }
 
   useEffect(() => {
     if (phase === "paused") {
-      audioRef.current?.pause();
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
     }
   }, [phase]);
 
   function exitGame() {
     if (audioRef.current) {
       audioRef.current.pause();
+      audioRef.current.currentTime = 0;
     }
-    
+
+    if (scoreRef.current > 0 || coinsCountRef.current > 0) {
+      saveHighScore(scoreRef.current);
+      saveLifetimeCoins(coinsCountRef.current);
+    }
+
     // Attempt to close the tab completely
     window.close();
 
@@ -858,7 +940,7 @@ export default function ChaseRunner({
       console.error(error);
       setBleStatus(
         "Connection failed: " +
-          (error instanceof Error ? error.message : String(error))
+        (error instanceof Error ? error.message : String(error))
       );
       cleanDisconnectState();
     }
@@ -867,21 +949,38 @@ export default function ChaseRunner({
   // Input handling
   useEffect(() => {
     const press = (e: KeyboardEvent) => {
+      if (e.shiftKey && (e.key === "d" || e.key === "D")) {
+        setDevMode((prev) => !prev);
+        playClickSfx();
+        return;
+      }
       const phaseNow = phaseRef.current;
-      
+
       // Override overlay menu navigation when paused or caught (dead)
       if (phaseNow === "paused" || phaseNow === "caught") {
         if (e.code === "ArrowLeft") {
           e.preventDefault?.();
-          updateOverlaySelection("left");
+          if (phaseNow === "paused") {
+            const next = overlaySelectionRef.current === "right" ? "middle" : "left";
+            updateOverlaySelection(next);
+          } else {
+            updateOverlaySelection("left");
+          }
         } else if (e.code === "ArrowRight") {
           e.preventDefault?.();
-          updateOverlaySelection("right");
+          if (phaseNow === "paused") {
+            const next = overlaySelectionRef.current === "left" ? "middle" : "right";
+            updateOverlaySelection(next);
+          } else {
+            updateOverlaySelection("right");
+          }
         } else if (e.code === "Enter") {
           e.preventDefault?.();
           if (phaseNow === "paused") {
             if (overlaySelectionRef.current === "left") {
               resumeGame();
+            } else if (overlaySelectionRef.current === "middle") {
+              startRun();
             } else {
               exitGame();
             }
@@ -918,7 +1017,7 @@ export default function ChaseRunner({
           }
         }
         return;
-      }      if (control === "keyboard_classic") {
+      } if (control === "keyboard_classic") {
         if (e.code === "Space") {
           // Jump only if the hero is on the ground and not sliding
           if (heroYOffsetRef.current === 0 && heroYVelocityRef.current === 0 && !heroIsSlidingRef.current) {
@@ -940,7 +1039,7 @@ export default function ChaseRunner({
         }
       }
     };
- 
+
     const release = (e: KeyboardEvent) => {
       if (e.code === "ArrowRight") {
         arrowRunningRef.current = false;
@@ -988,20 +1087,20 @@ export default function ChaseRunner({
         const b = parseInt(hex.substring(4, 6), 16);
         return { r, g, b };
       };
-      
+
       try {
         const c1 = parseHex(color1);
         const c2 = parseHex(color2);
-        
+
         const r = Math.round(c1.r + (c2.r - c1.r) * ratio);
         const g = Math.round(c1.g + (c2.g - c1.g) * ratio);
         const b = Math.round(c1.b + (c2.b - c1.b) * ratio);
-        
+
         const toHex = (val: number) => {
           const hex = val.toString(16);
           return hex.length === 1 ? "0" + hex : hex;
         };
-        
+
         return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
       } catch (e) {
         return color2;
@@ -1048,24 +1147,22 @@ export default function ChaseRunner({
       const currentStyle = bgStyleMap[String(currentStyleKey)] || targetStyle;
 
       const ratio = bgFadeOpacityRef.current;
-      if (currentStyle === targetStyle || ratio <= 0) {
-        return currentStyle;
-      }
+      const blendedSky = (currentStyle === targetStyle || ratio <= 0)
+        ? currentStyle.skyFallback
+        : blendHexColors(currentStyle.skyFallback, targetStyle.skyFallback, ratio);
+
+      const blendedFilter = (currentStyle === targetStyle || ratio <= 0)
+        ? currentStyle.filter
+        : (ratio > 0.5 ? targetStyle.filter : currentStyle.filter);
+
       return {
-        skyFallback: blendHexColors(currentStyle.skyFallback, targetStyle.skyFallback, ratio),
-        grassColors: [
-          blendHexColors(currentStyle.grassColors[0], targetStyle.grassColors[0], ratio),
-          blendHexColors(currentStyle.grassColors[1], targetStyle.grassColors[1], ratio),
-          blendHexColors(currentStyle.grassColors[2], targetStyle.grassColors[2], ratio),
-        ],
-        dirtColors: [
-          blendHexColors(currentStyle.dirtColors[0], targetStyle.dirtColors[0], ratio),
-          blendHexColors(currentStyle.dirtColors[1], targetStyle.dirtColors[1], ratio),
-          blendHexColors(currentStyle.dirtColors[2], targetStyle.dirtColors[2], ratio),
-        ],
-        pathLines: targetStyle.pathLines,
-        bladeColor: blendHexColors(currentStyle.bladeColor, targetStyle.bladeColor, ratio),
-        dustColor: blendHexColors(currentStyle.dustColor, targetStyle.dustColor, ratio),
+        skyFallback: blendedSky,
+        grassColors: mapStyles.background.grassColors,
+        dirtColors: mapStyles.background.dirtColors,
+        pathLines: mapStyles.background.pathLines,
+        bladeColor: mapStyles.background.bladeColor,
+        dustColor: mapStyles.background.dustColor,
+        filter: blendedFilter,
       };
     }
 
@@ -1090,9 +1187,13 @@ export default function ChaseRunner({
       const isTargetSnow = false;
       const isCurrentSnow = false;
 
-      // Rain is active during stage 0 overcast, or khanapara overcast (stage 4)
-      const rainActive = (currentWeatherRef.current === "overcast" || currentWeatherRef.current === "khanaparaovercast" ||
-        (isTargetOvercast && bgFadeOpacityRef.current > 0) || (isCurrentOvercast && bgFadeOpacityRef.current > 0));
+      // Rain active when overcast AND rain was randomly enabled for this overcast phase
+      const rainActive = (
+        (currentWeatherRef.current === "overcast" && rainOnOvercastRef.current) ||
+        (currentWeatherRef.current === "khanaparaovercast" && rainOnOvercastRef.current) ||
+        ((isTargetOvercast && bgFadeOpacityRef.current > 0) && rainOnOvercastRef.current) ||
+        ((isCurrentOvercast && bgFadeOpacityRef.current > 0) && rainOnOvercastRef.current)
+      );
       const snowActive = false;
 
       if (rainActive) {
@@ -1154,13 +1255,75 @@ export default function ChaseRunner({
       }
     }
 
-    function drawBgImage(img: HTMLImageElement, w: number, h: number, offset: number) {
+    function drawBgImage(img: HTMLImageElement, w: number, h: number, _offset: number) {
       if (!img.complete || img.naturalWidth === 0) return;
-      // Draw background image twice to support wrapping parallax scrolling
-      const bgW = w * 1.5;
-      const bgOffset = (groundOffsetRef.current * 0.11) % bgW;
-      ctx!.drawImage(img, -bgOffset, 0, bgW, h);
-      ctx!.drawImage(img, bgW - bgOffset, 0, bgW, h);
+      // Draw at natural aspect ratio scaled to canvas height — no stretching
+      const aspect = img.naturalWidth / img.naturalHeight;
+      // Ensure at least 2× canvas width so parallax scroll never reveals the right edge
+      const bgDrawW = Math.max(h * aspect, w * 1.85);
+      const localOffset = groundOffsetRef.current - zoneBgStartOffsetRef.current;
+      const parallaxX = -(localOffset * 0.06);
+      ctx!.drawImage(img, parallaxX, 0, bgDrawW, h);
+    }
+
+    function getBgScroll(score: number, w: number): number {
+      const bgW = w * 1.85;
+      const transW = w * 0.45;
+      // Stop the game exactly in the middle of the 5th transition (smoke tunnel)
+      const p5 = 5 * bgW + 4 * transW;
+      const m5 = p5 + transW / 2;
+      const targetCenter = m5;
+      const targetScrollForCenter = targetCenter - w / 2;
+      // Parallax background scrolls ~15% faster relative to score for a punchier feel
+      return (Math.min(9500, score) / 9500) * targetScrollForCenter;
+    }
+
+    function getBgStageInfo(score: number, w: number) {
+      const bgW = w * 1.85;
+      const transW = w * 0.45;
+      const bgScroll = getBgScroll(score, w);
+      const center = bgScroll + w / 2;
+
+      const p1 = bgW;
+      const t1 = p1 + transW;
+      const p2 = t1 + bgW;
+      const t2 = p2 + transW;
+      const p3 = t2 + bgW;
+      const t3 = p3 + transW;
+      const p4 = t3 + bgW;
+      const t4 = p4 + transW;
+      const p5 = t4 + bgW;
+      const t5 = p5 + transW;
+
+      let stage = 0;
+      let inTransition = false;
+
+      // Determine inTransition state based on boundaries
+      if (center >= p1 && center < t1) inTransition = true;
+      else if (center >= p2 && center < t2) inTransition = true;
+      else if (center >= p3 && center < t3) inTransition = true;
+      else if (center >= p4 && center < t4) inTransition = true;
+      else if (center >= p5 && center < t5) inTransition = true;
+
+      // Determine active stage based on midpoints of transitions
+      const m1 = p1 + transW / 2;
+      const m2 = p2 + transW / 2;
+      const m3 = p3 + transW / 2;
+      const m4 = p4 + transW / 2;
+
+      if (center < m1) {
+        stage = 0;
+      } else if (center < m2) {
+        stage = 1;
+      } else if (center < m3) {
+        stage = 2;
+      } else if (center < m4) {
+        stage = 3;
+      } else {
+        stage = 4;
+      }
+
+      return { stage, inTransition };
     }
 
     function drawSky(w: number, h: number, offset: number) {
@@ -1171,172 +1334,157 @@ export default function ChaseRunner({
         ctx!.filter = style.filter;
       }
 
-      if (false) {
-        // Legacy dual-panel parallax (unused in single Pragjyotishpur journey mode)
-        const imgNight = preloadedImagesRef.current["bg2night"];
+      const img1 = preloadedImagesRef.current["standard"];
+      const img2 = preloadedImagesRef.current["bg2night"];
+      const img3 = preloadedImagesRef.current["bg3"];
+      const img4 = preloadedImagesRef.current["bg_sumato"];
+      const bg5Key = (currentWeatherRef.current === "khanaparaovercast") ? "khanaparaovercast" : "khanaparaday";
+      const img5 = preloadedImagesRef.current[bg5Key];
 
-        // The left map is Map 1 (Aec and Kamakhya) which supports active weather progression
-        const drawMap1Bg = (x: number, width: number) => {
+      const bgW = w * 1.85; // Stretch width for each segment
+      const transW = w * 0.45; // Transition width for the black tunnel segment
+      const bgScroll = getBgScroll(scoreRef.current, w);
+
+      const x1 = -bgScroll; // Map 1
+      const xt1 = x1 + bgW; // Transition 1
+      const x2 = xt1 + transW; // Map 2
+      const xt2 = x2 + bgW; // Transition 2
+      const x3 = xt2 + transW; // Map 3
+      const xt3 = x3 + bgW; // Transition 3
+      const x4 = xt3 + transW; // Map 4
+      const xt4 = x4 + bgW; // Transition 4
+      const x5 = xt4 + transW; // Map 5
+
+      // Helper to draw a background panel
+      const drawPanelBg = (img: HTMLImageElement | undefined, x: number, width: number, isBg1 = false, isBg5 = false) => {
+        if (!img || !img.complete || img.naturalWidth === 0) {
+          ctx!.fillStyle = style.skyFallback;
+          ctx!.fillRect(x, 0, width, h);
+          return;
+        }
+
+        let showCrossfade = false;
+        if (isBg1) {
+          showCrossfade = ["standard", "overcast", "fog"].includes(currentWeatherRef.current);
+        } else if (isBg5) {
+          showCrossfade = ["khanaparaday", "khanaparaovercast"].includes(currentWeatherRef.current);
+        }
+
+        if (showCrossfade) {
           const currentBg = currentBgRef.current;
           const targetBg = targetBgRef.current;
-
-          if (currentBg) {
-            if (currentBg.complete && currentBg.naturalWidth > 0) {
-              ctx!.drawImage(currentBg, x, 0, width, h);
-            }
+          if (currentBg && currentBg.complete && currentBg.naturalWidth > 0) {
+            ctx!.drawImage(currentBg, x, 0, width, h);
           } else {
-            ctx!.fillStyle = style.skyFallback;
-            ctx!.fillRect(x, 0, width, h);
+            ctx!.drawImage(img, x, 0, width, h);
           }
-
-          if (targetBg && targetBg !== currentBg && bgFadeOpacityRef.current > 0) {
+          if (targetBg && targetBg !== currentBg && bgFadeOpacityRef.current > 0 && targetBg.complete && targetBg.naturalWidth > 0) {
             ctx!.save();
             ctx!.globalAlpha = bgFadeOpacityRef.current;
-            if (targetBg.complete && targetBg.naturalWidth > 0) {
-              ctx!.drawImage(targetBg, x, 0, width, h);
-            }
+            ctx!.drawImage(targetBg, x, 0, width, h);
             ctx!.restore();
           }
-        };
-
-        if (imgNight) {
-          // Stretched width for each map segment
-          const bgW = w * 1.5;
-          // Short transition width for the black tunnel segment
-          const transW = w * 0.35;
-          // Total cycle width = bgW + transW + bgW + transW = 2 * bgW + 2 * transW
-          const cycleW = 2 * bgW + 2 * transW;
-          const bgOffset = (groundOffsetRef.current * 0.11) % cycleW;
-
-          const x1 = -bgOffset; // Map 1
-          const x2 = bgW - bgOffset; // Transition 1 (Black + Portal Smoke)
-          const x3 = bgW + transW - bgOffset; // Map 2
-          const x4 = 2 * bgW + transW - bgOffset; // Transition 2 (Black + Portal Smoke)
-          const x5 = 2 * bgW + 2 * transW - bgOffset; // Map 1 (wrap)
-          const x6 = 3 * bgW + 2 * transW - bgOffset; // Transition 1 (wrap)
-          const x7 = 3 * bgW + 3 * transW - bgOffset; // Map 2 (wrap)
-          const x8 = 4 * bgW + 3 * transW - bgOffset; // Transition 2 (wrap)
-
-          // Helper to draw swirling smoke tunnel over a black backdrop
-          const drawSmokeTunnel = (x: number, width: number) => {
-            if (x + width + 150 <= 0 || x - 150 >= w) return;
-            
-            // Draw pure black middle backdrop
-            ctx!.fillStyle = "#000000";
-            ctx!.fillRect(x, 0, width, h);
-
-            // Wavy black backdrop left edge (no sharp borders, moving organically)
-            for (let y = -50; y < h + 50; y += 18) {
-              const leftWave = Math.sin(starTimeRef.current * 2.8 + y * 0.02) * 30;
-              ctx!.beginPath();
-              ctx!.arc(x + leftWave, y, 95, 0, Math.PI * 2);
-              ctx!.fill();
-            }
-
-            // Wavy black backdrop right edge (no sharp borders, moving organically)
-            for (let y = -50; y < h + 50; y += 18) {
-              const rightWave = Math.sin(starTimeRef.current * 2.8 + y * 0.02 + 1.5) * 30;
-              ctx!.beginPath();
-              ctx!.arc(x + width + rightWave, y, 95, 0, Math.PI * 2);
-              ctx!.fill();
-            }
-
-            // Dense swirling white/grey smoke cloud puffs (no gaps)
-            ctx!.save();
-            const smokeStep = 18; // dense vertical step
-            const xStep = 35; // dense horizontal step
-            const fadeZone = 120;
-
-            for (let curX = x - fadeZone; curX <= x + width + fadeZone; curX += xStep) {
-              const divIdx = Math.floor((curX - (x - fadeZone)) / xStep);
-
-              // Smooth opacity fade at transition margins (fade out to 0 on both left & right edges)
-              let edgeAlpha = 1.0;
-              if (curX < x) {
-                edgeAlpha = Math.max(0, 1 - (x - curX) / fadeZone);
-              } else if (curX > x + width) {
-                edgeAlpha = Math.max(0, 1 - (curX - (x + width)) / fadeZone);
-              }
-
-              for (let y = -50; y < h + 50; y += smokeStep) {
-                // Wind wave drift
-                const waveOffset = Math.sin(starTimeRef.current * 3.2 + y * 0.02 + divIdx * 0.5) * 22;
-                const puffX = curX + waveOffset;
-
-                // Alternate grey scales
-                const index = Math.floor(y / smokeStep) + divIdx + 100;
-                let color = `rgba(190, 190, 190, ${0.96 * edgeAlpha})`; // medium grey
-                if (index % 3 === 1) {
-                  color = `rgba(225, 225, 225, ${0.96 * edgeAlpha})`; // light grey
-                } else if (index % 3 === 2) {
-                  color = `rgba(250, 250, 250, ${1.0 * edgeAlpha})`; // white core
-                }
-
-                // Breathing size pulse
-                const baseRadius = 85 + Math.sin(starTimeRef.current * 2.5 + y) * 15;
-
-                ctx!.beginPath();
-                const pGrad = ctx!.createRadialGradient(puffX, y, 0, puffX, y, baseRadius);
-                pGrad.addColorStop(0, color);
-                pGrad.addColorStop(0.4, color);
-                pGrad.addColorStop(0.75, color.replace(/[\d\.]+\)$/, `${0.15 * edgeAlpha})`));
-                pGrad.addColorStop(1, "rgba(255, 255, 255, 0)");
-
-                ctx!.fillStyle = pGrad;
-                ctx!.arc(puffX, y, baseRadius, 0, Math.PI * 2);
-                ctx!.fill();
-              }
-            }
-            ctx!.restore();
-
-            // Cosmic spark particles
-            ctx!.fillStyle = "rgba(255, 255, 255, 0.95)";
-            for (let i = 0; i < 15; i++) {
-              const sy = ((starTimeRef.current * 85) + i * (h / 15)) % h;
-              const sx = x + (i * (width / 15)) + Math.sin(starTimeRef.current * 4 + i) * 25;
-              ctx!.beginPath();
-              ctx!.arc(sx, sy, 1.8 + Math.random() * 3, 0, Math.PI * 2);
-              ctx!.fill();
-            }
-          };
-
-          // Draw Segment 1 & 5 (Map 1, width: bgW)
-          if (x1 + bgW > 0 && x1 < w) drawMap1Bg(x1, bgW);
-          if (x5 + bgW > 0 && x5 < w) drawMap1Bg(x5, bgW);
-
-          // Draw Segment 3 & 7 (Map 2, width: bgW)
-          if (x3 + bgW > 0 && x3 < w) ctx!.drawImage(imgNight, x3, 0, bgW, h);
-          if (x7 + bgW > 0 && x7 < w) ctx!.drawImage(imgNight, x7, 0, bgW, h);
-
-          // Draw Segment 2, 4, 6 & 8 (Transition: Black Background + Smoke, width: transW) on top of maps
-          drawSmokeTunnel(x2, transW);
-          drawSmokeTunnel(x4, transW);
-          drawSmokeTunnel(x6, transW);
-          drawSmokeTunnel(x8, transW);
         } else {
-          // Fallback color
-          ctx!.fillStyle = style.skyFallback;
-          ctx!.fillRect(0, 0, w, h);
+          ctx!.drawImage(img, x, 0, width, h);
         }
-      } else {
-        const currentBg = currentBgRef.current;
-        const targetBg = targetBgRef.current;
+      };
 
-        if (currentBg) {
-          drawBgImage(currentBg, w, h, offset);
-        } else {
-          // Fallback color
-          ctx!.fillStyle = style.skyFallback;
-          ctx!.fillRect(0, 0, w, h);
+      // Helper to draw swirling smoke tunnel over a black backdrop
+      const drawSmokeTunnel = (x: number, width: number) => {
+        if (x + width + 150 <= 0 || x - 150 >= w) return;
+
+        // Draw pure black middle backdrop
+        ctx!.fillStyle = "#000000";
+        ctx!.fillRect(x, 0, width, h);
+
+        // Wavy black backdrop left edge (no sharp borders, moving organically)
+        for (let y = -50; y < h + 50; y += 18) {
+          const leftWave = Math.sin(starTimeRef.current * 2.8 + y * 0.02) * 30;
+          ctx!.beginPath();
+          ctx!.arc(x + leftWave, y, 95, 0, Math.PI * 2);
+          ctx!.fill();
         }
 
-        // Draw cross-fade blend
-        if (targetBg && targetBg !== currentBg && bgFadeOpacityRef.current > 0) {
-          ctx!.globalAlpha = bgFadeOpacityRef.current;
-          drawBgImage(targetBg, w, h, offset);
-          ctx!.globalAlpha = 1.0;
+        // Wavy black backdrop right edge (no sharp borders, moving organically)
+        for (let y = -50; y < h + 50; y += 18) {
+          const rightWave = Math.sin(starTimeRef.current * 2.8 + y * 0.02 + 1.5) * 30;
+          ctx!.beginPath();
+          ctx!.arc(x + width + rightWave, y, 95, 0, Math.PI * 2);
+          ctx!.fill();
         }
-      }
+
+        // Dense swirling white/grey smoke cloud puffs (no gaps)
+        ctx!.save();
+        const smokeStep = 18; // dense vertical step
+        const xStep = 35; // dense horizontal step
+        const fadeZone = 120;
+
+        for (let curX = x - fadeZone; curX <= x + width + fadeZone; curX += xStep) {
+          const divIdx = Math.floor((curX - (x - fadeZone)) / xStep);
+
+          // Smooth opacity fade at transition margins (fade out to 0 on both left & right edges)
+          let edgeAlpha = 1.0;
+          if (curX < x) {
+            edgeAlpha = Math.max(0, 1 - (x - curX) / fadeZone);
+          } else if (curX > x + width) {
+            edgeAlpha = Math.max(0, 1 - (curX - (x + width)) / fadeZone);
+          }
+
+          for (let y = -50; y < h + 50; y += smokeStep) {
+            // Wind wave drift
+            const waveOffset = Math.sin(starTimeRef.current * 3.2 + y * 0.02 + divIdx * 0.5) * 22;
+            const puffX = curX + waveOffset;
+
+            // Alternate grey scales
+            const index = Math.floor(y / smokeStep) + divIdx + 100;
+            let color = `rgba(190, 190, 190, ${0.96 * edgeAlpha})`; // medium grey
+            if (index % 3 === 1) {
+              color = `rgba(225, 225, 225, ${0.96 * edgeAlpha})`; // light grey
+            } else if (index % 3 === 2) {
+              color = `rgba(250, 250, 250, ${1.0 * edgeAlpha})`; // white core
+            }
+
+            // Breathing size pulse
+            const baseRadius = 85 + Math.sin(starTimeRef.current * 2.5 + y) * 15;
+
+            ctx!.beginPath();
+            const pGrad = ctx!.createRadialGradient(puffX, y, 0, puffX, y, baseRadius);
+            pGrad.addColorStop(0, color);
+            pGrad.addColorStop(0.4, color);
+            pGrad.addColorStop(0.75, color.replace(/[\d\.]+\)$/, `${0.15 * edgeAlpha})`));
+            pGrad.addColorStop(1, "rgba(255, 255, 255, 0)");
+
+            ctx!.fillStyle = pGrad;
+            ctx!.arc(puffX, y, baseRadius, 0, Math.PI * 2);
+            ctx!.fill();
+          }
+        }
+        ctx!.restore();
+
+        // Cosmic spark particles
+        ctx!.fillStyle = "rgba(255, 255, 255, 0.95)";
+        for (let i = 0; i < 15; i++) {
+          const sy = ((starTimeRef.current * 85) + i * (h / 15)) % h;
+          const sx = x + (i * (width / 15)) + Math.sin(starTimeRef.current * 4 + i) * 25;
+          ctx!.beginPath();
+          ctx!.arc(sx, sy, 1.8 + Math.random() * 3, 0, Math.PI * 2);
+          ctx!.fill();
+        }
+      };
+
+      // Draw background segments (only if visible on screen)
+      if (x1 + bgW > 0 && x1 < w) drawPanelBg(img1, x1, bgW, true, false);
+      if (x2 + bgW > 0 && x2 < w) drawPanelBg(img2, x2, bgW, false, false);
+      if (x3 + bgW > 0 && x3 < w) drawPanelBg(img3, x3, bgW, false, false);
+      if (x4 + bgW > 0 && x4 < w) drawPanelBg(img4, x4, bgW, false, false);
+      if (x5 + bgW > 0 && x5 < w) drawPanelBg(img5, x5, bgW, false, true);
+
+      // Draw Transition Segments (Black Background + Smoke) on top of maps
+      drawSmokeTunnel(xt1, transW);
+      drawSmokeTunnel(xt2, transW);
+      drawSmokeTunnel(xt3, transW);
+      drawSmokeTunnel(xt4, transW);
+      drawSmokeTunnel(x5 + bgW, transW);
 
       ctx!.restore();
     }
@@ -1350,7 +1498,7 @@ export default function ChaseRunner({
     }
 
     function drawGround(w: number, h: number, offset: number) {
-      const groundY = h * 0.8;
+      const groundY = h * 0.84;
       const style = getBlendedMapStyle();
 
       // ---------- Grass gradient ----------
@@ -1417,7 +1565,7 @@ export default function ChaseRunner({
       for (let i = -1; i < count; i++) {
         const x =
           ((i * spacing - (offset % spacing)) + w) %
-            (w + spacing) -
+          (w + spacing) -
           spacing / 2;
 
         ctx!.beginPath();
@@ -1467,7 +1615,7 @@ export default function ChaseRunner({
     function drawActorShadow(x: number, groundY: number, scale: number, jumpHeight = 0) {
       const drawH = 160 * scale;
       const drawW = drawH * 0.65;
-      
+
       // Fade and shrink shadow based on jump height
       const factor = Math.max(0.18, 1 - jumpHeight / 280);
       ctx!.globalAlpha = 0.28 * factor;
@@ -1480,22 +1628,21 @@ export default function ChaseRunner({
 
     function drawObstacles(w: number, h: number) {
       const activeObstacles = activeObstaclesRef.current;
-      const groundY = h * 0.8;
+      const groundY = h * 0.84;
       for (const obs of activeObstacles) {
         ctx!.save();
 
         if (obs.spriteUrl) {
           const img = preloadedImagesRef.current[obs.spriteUrl];
           if (img && img.complete) {
-            // Draw ground shadow
-            ctx!.globalAlpha = 0.22;
-            ctx!.fillStyle = "#000000";
-            ctx!.beginPath();
-            ctx!.ellipse(obs.x, obs.y + 13, obs.width * 0.45, 6, 0, 0, Math.PI * 2);
-            ctx!.fill();
-            ctx!.globalAlpha = 1.0;
-
-            ctx!.drawImage(img, obs.x - obs.width / 2, obs.y - obs.height + 12, obs.width, obs.height);
+            const isHole = obs.spriteUrl.includes("obstacle2");
+            if (isHole) {
+              // Hole: engraved into the ground, centered vertically on the ground line
+              ctx!.drawImage(img, obs.x - obs.width / 2, obs.y - obs.height / 2 + 8, obs.width, obs.height);
+            } else {
+              // Other obstacles: engraved but slightly higher
+              ctx!.drawImage(img, obs.x - obs.width / 2, obs.y - obs.height / 2 - 5, obs.width, obs.height);
+            }
           } else {
             // Fallback block if image is not preloaded yet
             ctx!.fillStyle = "#475569";
@@ -1504,17 +1651,17 @@ export default function ChaseRunner({
           ctx!.restore();
           continue;
         }
-        
+
         if (obs.type === "rock") {
           // Draw a polished stone rock
-          const rockGrad = ctx!.createLinearGradient(obs.x - obs.width/2, obs.y - obs.height, obs.x + obs.width/2, obs.y);
+          const rockGrad = ctx!.createLinearGradient(obs.x - obs.width / 2, obs.y - obs.height, obs.x + obs.width / 2, obs.y);
           rockGrad.addColorStop(0, "#9ca3af"); // highlighted top-left
           rockGrad.addColorStop(0.5, "#6b7280");
           rockGrad.addColorStop(1, "#374151"); // shadowed bottom-right
           ctx!.fillStyle = rockGrad;
           ctx!.strokeStyle = "#1f2937";
           ctx!.lineWidth = 2;
-          
+
           // Draw rock geometry with multiple shaded facets
           ctx!.beginPath();
           ctx!.moveTo(obs.x - obs.width / 2, obs.y);
@@ -1558,11 +1705,11 @@ export default function ChaseRunner({
           const woodDark = "#451a03";
           const woodMedium = "#78350f";
           const woodLight = "#b45309";
-          
+
           // Draw two thick posts with grain and beveling
           const postWidth = obs.width * 0.15;
           const postOffsets = [-obs.width * 0.35, obs.width * 0.35];
-          
+
           postOffsets.forEach(offset => {
             const px = obs.x + offset;
             // Post gradient
@@ -1570,54 +1717,54 @@ export default function ChaseRunner({
             postGrad.addColorStop(0, woodLight);
             postGrad.addColorStop(0.5, woodMedium);
             postGrad.addColorStop(1, woodDark);
-            
+
             ctx!.fillStyle = postGrad;
             ctx!.strokeStyle = "#270e00";
             ctx!.lineWidth = 2;
             ctx!.beginPath();
-            ctx!.rect(px - postWidth/2, obs.y - obs.height, postWidth, obs.height);
+            ctx!.rect(px - postWidth / 2, obs.y - obs.height, postWidth, obs.height);
             ctx!.fill();
             ctx!.stroke();
-            
+
             // Post cap (pointed top)
             ctx!.fillStyle = woodLight;
             ctx!.beginPath();
-            ctx!.moveTo(px - postWidth/2, obs.y - obs.height);
+            ctx!.moveTo(px - postWidth / 2, obs.y - obs.height);
             ctx!.lineTo(px, obs.y - obs.height - 8);
-            ctx!.lineTo(px + postWidth/2, obs.y - obs.height);
+            ctx!.lineTo(px + postWidth / 2, obs.y - obs.height);
             ctx!.closePath();
             ctx!.fill();
             ctx!.stroke();
           });
-          
+
           // Draw two horizontal planks with wood grain textures
           const plankHeight = obs.height * 0.2;
           const plankYOffsets = [obs.y - obs.height * 0.75, obs.y - obs.height * 0.35];
-          
+
           plankYOffsets.forEach(py => {
-            const plankGrad = ctx!.createLinearGradient(obs.x - obs.width/2, py - plankHeight/2, obs.x + obs.width/2, py + plankHeight/2);
+            const plankGrad = ctx!.createLinearGradient(obs.x - obs.width / 2, py - plankHeight / 2, obs.x + obs.width / 2, py + plankHeight / 2);
             plankGrad.addColorStop(0, woodLight);
             plankGrad.addColorStop(0.7, woodMedium);
             plankGrad.addColorStop(1, woodDark);
-            
+
             ctx!.fillStyle = plankGrad;
             ctx!.strokeStyle = "#270e00";
             ctx!.lineWidth = 2;
             ctx!.beginPath();
-            ctx!.rect(obs.x - obs.width/2, py - plankHeight/2, obs.width, plankHeight);
+            ctx!.rect(obs.x - obs.width / 2, py - plankHeight / 2, obs.width, plankHeight);
             ctx!.fill();
             ctx!.stroke();
-            
+
             // Wood grain lines
             ctx!.strokeStyle = "rgba(0, 0, 0, 0.18)";
             ctx!.lineWidth = 1.5;
             ctx!.beginPath();
-            ctx!.moveTo(obs.x - obs.width/2 + 5, py - 2);
-            ctx!.lineTo(obs.x + obs.width/2 - 5, py - 2);
-            ctx!.moveTo(obs.x - obs.width/2 + 10, py + 3);
-            ctx!.lineTo(obs.x + obs.width/2 - 10, py + 3);
+            ctx!.moveTo(obs.x - obs.width / 2 + 5, py - 2);
+            ctx!.lineTo(obs.x + obs.width / 2 - 5, py - 2);
+            ctx!.moveTo(obs.x - obs.width / 2 + 10, py + 3);
+            ctx!.lineTo(obs.x + obs.width / 2 - 10, py + 3);
             ctx!.stroke();
-            
+
             // Nail details
             postOffsets.forEach(offset => {
               ctx!.fillStyle = "#9ca3af"; // silver nail heads
@@ -1631,19 +1778,19 @@ export default function ChaseRunner({
           // Draw pointed steel spikes with shiny highlights and a blood-tipped danger look
           const spikeCount = 4;
           const spikeWidth = obs.width / spikeCount;
-          
+
           for (let k = 0; k < spikeCount; k++) {
             const sx = obs.x - obs.width / 2 + k * spikeWidth + spikeWidth / 2;
             const syBottom = obs.y;
             const syTop = obs.y - obs.height;
-            
+
             // Gradient for metallic look
-            const spikeGrad = ctx!.createLinearGradient(sx - spikeWidth/2, syBottom, sx + spikeWidth/2, syBottom);
+            const spikeGrad = ctx!.createLinearGradient(sx - spikeWidth / 2, syBottom, sx + spikeWidth / 2, syBottom);
             spikeGrad.addColorStop(0, "#475569"); // Slate grey
             spikeGrad.addColorStop(0.3, "#94a3b8"); // Light highlight
             spikeGrad.addColorStop(0.7, "#64748b"); // Medium
             spikeGrad.addColorStop(1, "#1e293b"); // Dark edge
-            
+
             ctx!.fillStyle = spikeGrad;
             ctx!.strokeStyle = "#0f172a";
             ctx!.lineWidth = 1.5;
@@ -1654,7 +1801,7 @@ export default function ChaseRunner({
             ctx!.closePath();
             ctx!.fill();
             ctx!.stroke();
-            
+
             // Shiny metallic edge highlight
             ctx!.strokeStyle = "rgba(255, 255, 255, 0.4)";
             ctx!.lineWidth = 1;
@@ -1664,7 +1811,7 @@ export default function ChaseRunner({
             ctx!.stroke();
 
             // Crimson blood-stained tip
-            const bloodGrad = ctx!.createLinearGradient(sx - spikeWidth/4, syTop + obs.height * 0.3, sx + spikeWidth/4, syTop);
+            const bloodGrad = ctx!.createLinearGradient(sx - spikeWidth / 4, syTop + obs.height * 0.3, sx + spikeWidth / 4, syTop);
             bloodGrad.addColorStop(0, "rgba(153, 27, 27, 0)"); // Fading out
             bloodGrad.addColorStop(1, "rgba(185, 28, 28, 0.95)"); // Solid crimson tip
             ctx!.fillStyle = bloodGrad;
@@ -1677,7 +1824,7 @@ export default function ChaseRunner({
           }
         } else if (obs.type === "archer") {
           ctx!.save();
-          
+
           // Draw ground shadow (only if not flying high)
           if (!obs.isFlying) {
             ctx!.globalAlpha = 0.25;
@@ -1781,7 +1928,7 @@ export default function ChaseRunner({
       isSliding = false
     ) {
       if (!img) return;
-      
+
       if (img === heroNodeRef.current) {
         if (armourTimerRef.current > 0) {
           img.style.filter = "drop-shadow(0 0 12px rgba(0, 191, 255, 0.95)) drop-shadow(0 0 4px rgba(255, 255, 255, 0.8))";
@@ -1792,31 +1939,31 @@ export default function ChaseRunner({
         }
       }
       const bob = animate ? Math.sin(runPhase) * 4 : 0;
-      const footOffset = 24;
+      const footOffset = 42;
       const isRestingFrame = !!restedFrame && (restedFrame.includes("standing") || restedFrame.includes("tired"));
       const restingVerticalOffset = isRestingFrame ? -8 : 0;
       const currentFrame = img.getAttribute("data-frame");
       const nextFrame = animate
         ? frames[Math.floor((frameTimerRef.current / frameDelayMs) % frames.length)]
         : restedFrame ||
-          (currentFrame && frames.includes(currentFrame)
-            ? currentFrame
-            : frames[0]);
+        (currentFrame && frames.includes(currentFrame)
+          ? currentFrame
+          : frames[0]);
       if (img.getAttribute("data-frame") !== nextFrame) {
         img.setAttribute("data-frame", nextFrame);
         img.src = nextFrame;
       }
       img.style.left = `${x}px`;
       img.style.height = `${drawH}px`;
-      
+
       let finalTop = groundY - drawH + footOffset + bob + verticalShift + restingVerticalOffset;
       if (isSliding) {
         // Shift down dynamically to align the scaled-down sliding character with the ground
-        finalTop += (drawH * (1 - frameScale)) / 2 - 25;
+        finalTop += (drawH * (1 - frameScale)) / 2 - 43;
       }
       img.style.top = `${finalTop}px`;
       img.style.visibility = visible ? "visible" : "hidden";
-      
+
       if (isSliding) {
         img.style.transform = `translateX(-50%) scale(${frameScale})`;
       } else {
@@ -1825,16 +1972,22 @@ export default function ChaseRunner({
     }
 
     function spawnCoinGroup(w: number, groundY: number) {
-      const isArc = Math.random() < 0.55;
-      const baseAir = Math.random() < 0.4;
-      
+      let isArc = Math.random() < 0.55;
+      let baseAir = Math.random() < 0.4;
+
+      const isTreadmillEasyNormal = control === "treadmill" && (modeRef.current === "easy" || modeRef.current === "normal");
+      if (isTreadmillEasyNormal) {
+        isArc = false;
+        baseAir = false;
+      }
+
       if (isArc) {
         // Spawn 5 coins in a parabolic jump arc matching the hero jump height curve (all require jumping)
         for (let i = 0; i < 5; i++) {
           const coinX = w + 50 + i * 70;
           const peakOffset = [0, 35, 70, 35, 0][i];
           const coinY = groundY - 190 - peakOffset;
-          
+
           activePowerUpsRef.current.push({
             x: coinX,
             y: coinY,
@@ -1872,7 +2025,7 @@ export default function ChaseRunner({
 
       const phaseNow = phaseRef.current;
       let hasMovement = false;
-      const groundY = h * 0.8;
+      const groundY = h * 0.84;
       const heroX = w * 0.34;
       const gapPx = (gapRef.current / GAP_MAX) * w * 0.26 + 26;
       const villainX = asuraJumpedToHeroRef.current
@@ -1882,84 +2035,31 @@ export default function ChaseRunner({
       if (phaseNow === "running") {
         // --- Journey background progression ---
         const score = scoreRef.current;
-        const thresholds = [0, 150, 350, 600, 900];
         const stages = ["standard", "bg2night", "bg3", "bg_sumato", "khanaparaday"] as const;
-        let targetStage = 0;
-        for (let s = thresholds.length - 1; s >= 0; s--) {
-          if (score >= thresholds[s]) { targetStage = s; break; }
-        }
-        // Trigger portal smoke transition when a new stage is reached
-        if (targetStage > journeyStageRef.current && portalStateRef.current === "none" && pendingNextStageRef.current === -1) {
-          portalStateRef.current = "in";
-          portalProgressRef.current = 0;
-          pendingNextStageRef.current = targetStage;
-        }
-
-        // Advance portal smoke animation
-        if (portalStateRef.current === "in") {
-          portalProgressRef.current = Math.min(1, portalProgressRef.current + dt * 1.8); // ~0.55s to full
-          if (portalProgressRef.current >= 1) {
-            // Swap to new stage at smoke peak
-            const nextStage = pendingNextStageRef.current;
-            journeyStageRef.current = nextStage;
-            pendingNextStageRef.current = -1;
-            if (nextStage < stages.length - 1) {
-              currentWeatherRef.current = stages[nextStage];
-            } else {
-              currentWeatherRef.current = Math.random() < 0.4 ? "khanaparaovercast" : "khanaparaday";
-            }
-            weatherTimerRef.current = 0;
-            weatherDurationRef.current = 0;
-            // Instantly swap BG image (smoke covers the swap)
-            const newImg = preloadedImagesRef.current[currentWeatherRef.current] || null;
-            if (newImg) {
-              currentBgRef.current = newImg;
-              targetBgRef.current = newImg;
-              bgImgRef.current = newImg;
-              bgFadeOpacityRef.current = 0;
-            }
-            portalStateRef.current = "out";
-          }
-        } else if (portalStateRef.current === "out") {
-          portalProgressRef.current = Math.max(0, portalProgressRef.current - dt * 1.2); // ~0.83s to clear
-          if (portalProgressRef.current <= 0) {
-            portalStateRef.current = "none";
+        const { stage: targetStage } = getBgStageInfo(score, w);
+        if (targetStage !== journeyStageRef.current) {
+          journeyStageRef.current = targetStage;
+          if (targetStage < stages.length - 1) {
+            currentWeatherRef.current = stages[targetStage];
+          } else {
+            currentWeatherRef.current = "khanaparaday";
           }
         }
-
+        // Victory: stop the game at 11000 points
+        if (score >= 11000 && phaseRef.current === "running") {
+          phaseRef.current = "victory";
+          setPhase("victory");
+          if (audioRef.current) audioRef.current.pause();
+          saveHighScore(scoreRef.current);
+          saveLifetimeCoins(coinsCountRef.current);
+        }
         let selectedImg: HTMLImageElement | null = null;
         const currentStage = journeyStageRef.current;
         const isKhanaparaStage = currentStage === 4;
         const isBg1Stage = currentStage === 0;
 
         if (isKhanaparaStage) {
-          // Khanapara: day/overcast weather cycles with rain
-          if (weatherDurationRef.current === 0) {
-            weatherDurationRef.current = 20 + Math.random() * 25;
-            weatherTimerRef.current = 0;
-          }
-          weatherTimerRef.current += dt;
-          if (weatherTimerRef.current >= weatherDurationRef.current && !weatherStoppingRef.current) {
-            const current = currentWeatherRef.current;
-            if (current === "khanaparaovercast") {
-              weatherStoppingRef.current = true;
-            } else {
-              currentWeatherRef.current = Math.random() < 0.4 ? "khanaparaovercast" : "khanaparaday";
-              weatherTimerRef.current = 0;
-              weatherDurationRef.current = 20 + Math.random() * 25;
-            }
-          }
-          if (weatherStoppingRef.current) {
-            precipitationStrengthRef.current -= dt / 1.5;
-            if (precipitationStrengthRef.current <= 0) {
-              precipitationStrengthRef.current = 1.0;
-              weatherStoppingRef.current = false;
-              currentWeatherRef.current = Math.random() < 0.35 ? "khanaparaovercast" : "khanaparaday";
-              weatherTimerRef.current = 0;
-              weatherDurationRef.current = 20 + Math.random() * 25;
-            }
-          }
-          selectedImg = preloadedImagesRef.current[currentWeatherRef.current] || preloadedImagesRef.current["khanaparaday"] || null;
+          selectedImg = preloadedImagesRef.current["khanaparaday"] || null;
         } else if (isBg1Stage) {
           // BG1: weather cycles standard/overcast/fog with rain on overcast
           if (weatherDurationRef.current === 0) {
@@ -1973,7 +2073,10 @@ export default function ChaseRunner({
               weatherStoppingRef.current = true;
             } else {
               const opts = ["standard", "overcast", "fog"].filter(o => o !== current);
-              currentWeatherRef.current = opts[Math.floor(Math.random() * opts.length)];
+              const next = opts[Math.floor(Math.random() * opts.length)];
+              // Randomly decide if this overcast phase will have rain (~60% chance)
+              if (next === "overcast") rainOnOvercastRef.current = Math.random() < 0.6;
+              currentWeatherRef.current = next;
               weatherTimerRef.current = 0;
               weatherDurationRef.current = 15 + Math.random() * 20;
             }
@@ -2018,7 +2121,8 @@ export default function ChaseRunner({
           }
         }
 
-        difficultyRef.current += dt * 0.012;
+        // Difficulty steps: 5% increase every 1000 score
+        difficultyRef.current = Math.pow(1.05, Math.floor(scoreRef.current / 1000));
 
         let throttle = 0;
         if (control === "keyboard_classic") {
@@ -2027,8 +2131,8 @@ export default function ChaseRunner({
           throttle = bleConnectedRef.current
             ? Math.max(0, Math.min(1, bleVelocityRef.current / BLE_MAX_SPEED_KMH))
             : holdingRef.current
-            ? 1
-            : 0;
+              ? 1
+              : 0;
         }
 
         hasMovement = throttle > 0.01;
@@ -2050,6 +2154,66 @@ export default function ChaseRunner({
           if (heroYOffsetRef.current <= 0) {
             heroYOffsetRef.current = 0;
             heroYVelocityRef.current = 0;
+          }
+        }
+
+        if (devModeRef.current) {
+          // --- Autonomous AI controls ---
+          // 1. Scan obstacles to jump or slide
+          const activeObstacles = activeObstaclesRef.current;
+          let shouldJump = false;
+          let shouldSlide = false;
+
+          for (let i = 0; i < activeObstacles.length; i++) {
+            const obs = activeObstacles[i];
+            if (obs.passed) continue;
+
+            const dist = obs.x - heroX;
+            if (dist > 0 && dist < 240) {
+              if (obs.type === "rock" || obs.type === "fence" || obs.type === "spike") {
+                shouldJump = true;
+              } else if (obs.type === "arrow") {
+                shouldSlide = true;
+              } else if (obs.type === "archer") {
+                shouldSlide = true; // Slide to dash the archer
+              }
+            }
+          }
+
+          // 2. Scan coins/powerups to jump
+          if (!shouldJump && !shouldSlide) {
+            const activePowerUps = activePowerUpsRef.current;
+            const currentSpeed = currentSpeedRef.current || 260;
+            const optimalJumpDist = Math.max(160, 0.55 * currentSpeed);
+
+            for (let i = 0; i < activePowerUps.length; i++) {
+              const p = activePowerUps[i];
+              if (p.collected) continue;
+
+              const dist = p.x - heroX;
+              if (dist > 0 && dist < optimalJumpDist) {
+                // Jump if the item (coin or power-up) is in the air
+                if (p.y < groundY - 100) {
+                  shouldJump = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          // Execute autonomous actions
+          if (shouldJump) {
+            if (heroYOffsetRef.current === 0 && heroYVelocityRef.current === 0 && !heroIsSlidingRef.current) {
+              heroYVelocityRef.current = 550;
+              heroYOffsetRef.current = 1;
+            }
+          } else if (shouldSlide) {
+            if (heroYOffsetRef.current === 0 && heroYVelocityRef.current === 0 && !heroIsSlidingRef.current) {
+              heroIsSlidingRef.current = true;
+              slideTimerRef.current = 0.85;
+            } else if (heroYOffsetRef.current > 0) {
+              heroYVelocityRef.current = Math.min(heroYVelocityRef.current, -600);
+            }
           }
         }
 
@@ -2089,10 +2253,19 @@ export default function ChaseRunner({
         // Gate: keyboard needs ArrowRight held; treadmill needs the user to be running
         const isActivelyRunning = hasMovement;
         if (isActivelyRunning) {
+          const score = scoreRef.current;
+          const { inTransition } = getBgStageInfo(score, w);
+
           obstacleTimerRef.current += dt;
           const spawnInterval = Math.max(1.8, 3.2 - (difficultyRef.current - 1.0) * 0.4);
           const coinsNearSpawn = activePowerUpsRef.current.some((p) => p.x > w - 650);
-          if (obstacleTimerRef.current >= spawnInterval && !coinsNearSpawn) {
+
+          const shouldSpawnObstacles = !(
+            control === "treadmill" && 
+            (modeRef.current === "easy" || modeRef.current === "normal")
+          );
+
+          if (shouldSpawnObstacles && obstacleTimerRef.current >= spawnInterval && !coinsNearSpawn && !inTransition) {
             obstacleTimerRef.current = 0;
             const types: Array<"rock" | "fence" | "spike" | "arrow"> =
               modeRef.current === "easy"
@@ -2151,15 +2324,15 @@ export default function ChaseRunner({
           coinTimerRef.current += dt;
           const coinInterval = Math.max(2.2, 4.0 - (difficultyRef.current - 1.0) * 0.5);
           const obstaclesNearSpawn = activeObstaclesRef.current.some((o) => o.x > w - 650);
-          if (coinTimerRef.current >= coinInterval && !obstaclesNearSpawn) {
+          if (coinTimerRef.current >= coinInterval && !obstaclesNearSpawn && !inTransition) {
             coinTimerRef.current = 0;
             spawnCoinGroup(w, groundY);
           }
 
-          // Spawn armour powerups periodically (less frequent)
+           // Spawn armour powerups periodically (less frequent)
           armourSpawnTimerRef.current += dt;
           const armourInterval = 35.0;
-          if (armourSpawnTimerRef.current >= armourInterval && !obstaclesNearSpawn) {
+          if (shouldSpawnObstacles && armourSpawnTimerRef.current >= armourInterval && !obstaclesNearSpawn && !inTransition) {
             armourSpawnTimerRef.current = 0;
             const hasArmourInMap = activePowerUpsRef.current.some((p) => p.type === "armour");
             if (!hasArmourInMap) {
@@ -2179,7 +2352,7 @@ export default function ChaseRunner({
           // Spawn magnet powerups periodically
           magnetSpawnTimerRef.current += dt;
           const magnetInterval = 26.0;
-          if (magnetSpawnTimerRef.current >= magnetInterval && !obstaclesNearSpawn) {
+          if (shouldSpawnObstacles && magnetSpawnTimerRef.current >= magnetInterval && !obstaclesNearSpawn && !inTransition) {
             magnetSpawnTimerRef.current = 0;
             const hasMagnetInMap = activePowerUpsRef.current.some((p) => p.type === "magnet");
             if (!hasMagnetInMap) {
@@ -2319,30 +2492,36 @@ export default function ChaseRunner({
         }
 
 
-        if (hasMovement) {
-          gapRef.current = Math.max(0, Math.min(GAP_MAX, gapRef.current - drain * dt));
+        if (devModeRef.current) {
+          // Dev mode: score fast-forwards, gap stays pinned at max
+          elapsedRef.current += dt * 4;
+          groundOffsetRef.current += (currentSpeedRef.current || 290) * dt * 4;
+          rawScoreRef.current += dt * 4 * 14 * difficultyRef.current;
+          scoreRef.current = Math.floor(rawScoreRef.current) + scoreBonusRef.current;
+          gapRef.current = GAP_MAX;
+        } else if (hasMovement) {
           elapsedRef.current += dt;
-          scoreRef.current = Math.floor(elapsedRef.current * 12 * difficultyRef.current) + scoreBonusRef.current;
+          gapRef.current = Math.max(0, Math.min(GAP_MAX, gapRef.current - drain * dt));
+          rawScoreRef.current += dt * 14 * difficultyRef.current;
+          scoreRef.current = Math.floor(rawScoreRef.current) + scoreBonusRef.current;
         } else {
+          elapsedRef.current += dt;
+          rawScoreRef.current += dt * 14 * difficultyRef.current;
+          scoreRef.current = Math.floor(rawScoreRef.current) + scoreBonusRef.current;
           const idleDrain = isIdleCatchupRef.current ? drain : idleApproachRate * villainSpeedMultiplier;
           gapRef.current = Math.max(0, gapRef.current - idleDrain * dt);
-          scoreRef.current = Math.floor(elapsedRef.current * 12 * difficultyRef.current) + scoreBonusRef.current;
         }
         setScore(scoreRef.current);
         setGapDisplay(gapRef.current);
 
-        let baseObstacleSpeed = 260;
+        let baseObstacleSpeed = 290;
         if (modeRef.current === "easy") {
-          baseObstacleSpeed = 190;
+          baseObstacleSpeed = 215;
         } else if (modeRef.current === "hard") {
-          baseObstacleSpeed = 340;
+          baseObstacleSpeed = 380;
         }
-        let scoreSpeedMultiplier = 1.0 + (scoreRef.current / 1000) * 0.15;
-        if (control === "keyboard_classic") {
-          const distance = scoreRef.current * 0.2;
-          const intervalsOf350m = Math.floor(distance / 350);
-          scoreSpeedMultiplier *= (1.0 + intervalsOf350m * 0.12);
-        }
+        // Speed increases with each new background stage instead of every 350 score
+        const scoreSpeedMultiplier = 1.0 + journeyStageRef.current * 0.15;
         const currentSpeed = baseObstacleSpeed * scoreSpeedMultiplier * speedFactor;
         currentSpeedRef.current = currentSpeed;
 
@@ -2357,6 +2536,7 @@ export default function ChaseRunner({
         // Obstacles updates & collisions
         if (control === "keyboard_classic" || control === "treadmill") {
           const activeObstacles = activeObstaclesRef.current;
+
           for (let i = activeObstacles.length - 1; i >= 0; i--) {
             const obs = activeObstacles[i];
 
@@ -2375,7 +2555,7 @@ export default function ChaseRunner({
               }
               continue;
             }
-            
+
             // Arrows fly faster towards the player (slower in normal, extremely fast in hard)
             if (obs.type === "arrow") {
               const arrowSpeedBoost = modeRef.current === "hard" ? 380 : 180;
@@ -2422,7 +2602,7 @@ export default function ChaseRunner({
                 const collisionHeight = obs.height * 0.85;
                 const obsLeft = obs.x - collisionWidth / 2;
                 const obsRight = obs.x + collisionWidth / 2;
-                
+
                 const heroBottom = groundY - heroYOffsetRef.current;
                 const heroTop = heroBottom - 90;
                 const obsBottom = obs.y;
@@ -2431,33 +2611,10 @@ export default function ChaseRunner({
                 const xOverlap = heroRight >= obsLeft && heroLeft <= obsRight;
                 const yOverlap = heroBottom >= obsTop && heroTop <= obsBottom;
 
-                if (xOverlap && yOverlap) {
+                if (!devModeRef.current && xOverlap && yOverlap) {
                   if (armourTimerRef.current > 0) {
+                    // Armour active — fully immune, pass through silently
                     obs.passed = true;
-                    playShieldBlockSfx();
-
-                    floatingTextsRef.current.push({
-                      x: obs.x,
-                      y: obs.y - 45,
-                      text: "BLOCKED!",
-                      alpha: 1.0,
-                      vy: -60,
-                    });
-
-                    // Spawn blue deflected sparks
-                    for (let j = 0; j < 12; j++) {
-                      const angle = Math.random() * Math.PI * 2;
-                      const sp = 85 + Math.random() * 115;
-                      goldSparksRef.current.push({
-                        x: obs.x,
-                        y: obs.y - 20,
-                        vx: Math.cos(angle) * sp,
-                        vy: Math.sin(angle) * sp - 20,
-                        alpha: 1.0,
-                        size: Math.random() * 3 + 2,
-                        color: [0, 220, 255],
-                      });
-                    }
                   } else {
                     // Obstacle hit -> lose instantly!
                     deathReasonRef.current = "archer";
@@ -2526,33 +2683,10 @@ export default function ChaseRunner({
             const xOverlap = heroRight >= obsLeft && heroLeft <= obsRight;
             const yOverlap = heroBottom >= obsTop && heroTop <= obsBottom;
 
-            if (xOverlap && yOverlap) {
+            if (!devModeRef.current && xOverlap && yOverlap) {
               if (armourTimerRef.current > 0) {
+                // Armour active — fully immune to obstacles & arrows, pass through silently
                 obs.passed = true;
-                playShieldBlockSfx();
-
-                floatingTextsRef.current.push({
-                  x: obs.x,
-                  y: obs.y - 45,
-                  text: "BLOCKED!",
-                  alpha: 1.0,
-                  vy: -60,
-                });
-
-                // Spawn blue deflected sparks
-                for (let j = 0; j < 12; j++) {
-                  const angle = Math.random() * Math.PI * 2;
-                  const sp = 85 + Math.random() * 115;
-                  goldSparksRef.current.push({
-                    x: obs.x,
-                    y: obs.y - 20,
-                    vx: Math.cos(angle) * sp,
-                    vy: Math.sin(angle) * sp - 20,
-                    alpha: 1.0,
-                    size: Math.random() * 3 + 2,
-                    color: [0, 220, 255],
-                  });
-                }
               } else {
                 // Obstacle hit -> lose instantly!
                 if (obs.type === "arrow") {
@@ -2631,7 +2765,7 @@ export default function ChaseRunner({
         const activePowerUps = activePowerUpsRef.current;
         for (let i = activePowerUps.length - 1; i >= 0; i--) {
           const p = activePowerUps[i];
-          
+
           // Skip ground level coin collection when sliding (unless magnet is active)
           if (heroIsSlidingRef.current && (!p.type || p.type === "coin") && p.y >= groundY - 100 && magnetTimerRef.current <= 0) {
             p.x -= currentSpeed * dt;
@@ -2668,14 +2802,18 @@ export default function ChaseRunner({
           if (isColliding && !p.collected) {
             p.collected = true;
             if (p.type === "armour") {
-              armourTimerRef.current = 15.0;
-              setArmourTime(15.0);
+              const levelIdx = Math.min(Math.max(armourLevelRef.current, 1), 5) - 1;
+              const stats = ARMOUR_UPGRADES[levelIdx];
+              armourMaxTimeRef.current = stats.duration;
+              armourTimerRef.current = stats.duration;
+              setArmourTime(stats.duration);
+
               playShieldSfx();
 
               floatingTextsRef.current.push({
                 x: p.x,
                 y: p.y - 15,
-                text: "SHIELD ACTIVE!",
+                text: `ARMOUR ACTIVE! (${stats.duration}s)`,
                 alpha: 1.0,
                 vy: -70,
               });
@@ -2695,8 +2833,12 @@ export default function ChaseRunner({
                 });
               }
             } else if (p.type === "magnet") {
-              magnetTimerRef.current = 10.0;
-              setMagnetTime(10.0);
+              const levelIdx = Math.min(Math.max(magnetLevelRef.current, 1), 5) - 1;
+              const stats = MAGNET_UPGRADES[levelIdx];
+              magnetMaxTimeRef.current = stats.duration;
+              magnetTimerRef.current = stats.duration;
+              setMagnetTime(stats.duration);
+
               playMagnetSfx();
 
               floatingTextsRef.current.push({
@@ -2759,7 +2901,7 @@ export default function ChaseRunner({
           }
         }
 
-        if (gapRef.current <= CATCH_GAP) {
+        if (!devModeRef.current && gapRef.current <= CATCH_GAP) {
           deathReasonRef.current = "asura";
           setDeathReason("asura");
           phaseRef.current = "caught";
@@ -2801,7 +2943,7 @@ export default function ChaseRunner({
       } else {
         shakeRef.current = 0;
       }
- 
+
       drawSky(w, h, 0);
       drawFarShops(w, h, 0);
       drawMidShops(w, h, 0);
@@ -2975,7 +3117,7 @@ export default function ChaseRunner({
         ctx!.strokeStyle = "rgba(225, 95, 202, 0.45)";
         ctx!.lineWidth = 2;
         ctx!.setLineDash([4, 8]);
-        
+
         ctx!.beginPath();
         ctx!.arc(centerX, centerY, radius + Math.sin(starTimeRef.current * 4) * 5, 0, Math.PI * 2);
         ctx!.stroke();
@@ -3002,7 +3144,7 @@ export default function ChaseRunner({
 
         ctx!.beginPath();
         ctx!.arc(bubbleX, bubbleY, bubbleRadius, 0, Math.PI * 2);
-        
+
         const gradient = ctx!.createRadialGradient(bubbleX, bubbleY, bubbleRadius * 0.5, bubbleX, bubbleY, bubbleRadius);
         gradient.addColorStop(0, "rgba(0, 191, 255, 0.05)");
         gradient.addColorStop(0.7, "rgba(0, 191, 255, 0.18)");
@@ -3041,65 +3183,88 @@ export default function ChaseRunner({
 
       // --- Portal smoke overlay (drawn last, above everything, ignores shake) ---
       if (portalStateRef.current !== "none") {
-        const prog = portalProgressRef.current;
-        // Ease in-out curve for smooth smoke
-        const eased = prog < 0.5 ? 2 * prog * prog : 1 - Math.pow(-2 * prog + 2, 2) / 2;
-        const alpha = portalStateRef.current === "in" ? eased : eased;
-
-        // Thick smoke overlay using multiple radial gradient puffs
-        const smokeCanvas = ctx!;
-        smokeCanvas.save();
-        smokeCanvas.globalAlpha = alpha;
-
-        // Base blackout at peak
-        smokeCanvas.fillStyle = `rgba(12, 10, 18, ${alpha * 0.55})`;
-        smokeCanvas.fillRect(0, 0, w, h);
-        smokeCanvas.globalAlpha = 1;
-
-        // Swirling smoke puff columns
-        const puffStep = 38;
-        const rowStep = 40;
-        for (let px = -60; px < w + 60; px += puffStep) {
-          for (let py = -60; py < h + 60; py += rowStep) {
-            const waveX = Math.sin(starTimeRef.current * 3.5 + py * 0.018 + px * 0.01) * 28;
-            const waveY = Math.cos(starTimeRef.current * 2.8 + px * 0.015) * 18;
-            const cx2 = px + waveX;
-            const cy2 = py + waveY;
-            const idx = Math.floor(px / puffStep) + Math.floor(py / rowStep);
-            const baseR = 65 + Math.sin(starTimeRef.current * 2 + idx) * 18;
-
-            // Alternate between misty grey and white smoke
-            const lightness = idx % 3 === 0 ? "240,240,245" : idx % 3 === 1 ? "200,205,215" : "170,175,185";
-            const puffAlpha = alpha * (0.55 + Math.sin(starTimeRef.current * 2.2 + idx * 0.7) * 0.2);
-
-            const grad = smokeCanvas.createRadialGradient(cx2, cy2, 0, cx2, cy2, baseR);
-            grad.addColorStop(0, `rgba(${lightness}, ${puffAlpha})`);
-            grad.addColorStop(0.5, `rgba(${lightness}, ${puffAlpha * 0.6})`);
-            grad.addColorStop(1, `rgba(${lightness}, 0)`);
-
-            smokeCanvas.beginPath();
-            smokeCanvas.fillStyle = grad;
-            smokeCanvas.arc(cx2, cy2, baseR, 0, Math.PI * 2);
-            smokeCanvas.fill();
+        if (portalStateRef.current === "black") {
+          // Full black gap between backgrounds
+          ctx!.save();
+          ctx!.fillStyle = "rgb(3, 2, 6)";
+          ctx!.fillRect(0, 0, w, h);
+          // Subtle swirling dark smoke during black phase
+          for (let px = -40; px < w + 40; px += 50) {
+            for (let py = -40; py < h + 40; py += 50) {
+              const wX = Math.sin(starTimeRef.current * 3 + py * 0.02) * 20;
+              const wY = Math.cos(starTimeRef.current * 2.5 + px * 0.015) * 15;
+              const g = ctx!.createRadialGradient(px + wX, py + wY, 0, px + wX, py + wY, 55);
+              g.addColorStop(0, "rgba(30,20,45,0.7)");
+              g.addColorStop(1, "rgba(0,0,0,0)");
+              ctx!.fillStyle = g;
+              ctx!.beginPath();
+              ctx!.arc(px + wX, py + wY, 55, 0, Math.PI * 2);
+              ctx!.fill();
+            }
           }
-        }
+          ctx!.restore();
+        } else {
+          const prog = portalProgressRef.current;
+          const eased = prog < 0.5 ? 2 * prog * prog : 1 - Math.pow(-2 * prog + 2, 2) / 2;
 
-        // Bright energy sparks at portal peak
-        if (prog > 0.6 && portalStateRef.current === "in") {
-          const sparkAlpha = (prog - 0.6) / 0.4;
-          smokeCanvas.globalAlpha = sparkAlpha;
-          smokeCanvas.fillStyle = `rgba(255, 240, 200, ${sparkAlpha})`;
-          for (let i = 0; i < 20; i++) {
-            const sx = (Math.sin(starTimeRef.current * 5 + i * 1.3) * 0.5 + 0.5) * w;
-            const sy = (Math.cos(starTimeRef.current * 4.5 + i * 0.9) * 0.5 + 0.5) * h;
-            smokeCanvas.beginPath();
-            smokeCanvas.arc(sx, sy, 1.5 + Math.random() * 3, 0, Math.PI * 2);
-            smokeCanvas.fill();
+          ctx!.save();
+          // Dark base
+          ctx!.fillStyle = `rgba(6, 4, 12, ${eased * 0.7})`;
+          ctx!.fillRect(0, 0, w, h);
+
+          // Swirling smoke puff columns
+          const puffStep = 38;
+          const rowStep = 40;
+          for (let px = -60; px < w + 60; px += puffStep) {
+            for (let py = -60; py < h + 60; py += rowStep) {
+              const waveX = Math.sin(starTimeRef.current * 3.5 + py * 0.018 + px * 0.01) * 28;
+              const waveY = Math.cos(starTimeRef.current * 2.8 + px * 0.015) * 18;
+              const cx2 = px + waveX;
+              const cy2 = py + waveY;
+              const idx = Math.floor(px / puffStep) + Math.floor(py / rowStep);
+              const baseR = 65 + Math.sin(starTimeRef.current * 2 + idx) * 18;
+              const lightness = idx % 3 === 0 ? "240,240,245" : idx % 3 === 1 ? "200,205,215" : "170,175,185";
+              const puffAlpha = eased * (0.6 + Math.sin(starTimeRef.current * 2.2 + idx * 0.7) * 0.22);
+              const grad = ctx!.createRadialGradient(cx2, cy2, 0, cx2, cy2, baseR);
+              grad.addColorStop(0, `rgba(${lightness}, ${puffAlpha})`);
+              grad.addColorStop(0.5, `rgba(${lightness}, ${puffAlpha * 0.55})`);
+              grad.addColorStop(1, `rgba(${lightness}, 0)`);
+              ctx!.beginPath();
+              ctx!.fillStyle = grad;
+              ctx!.arc(cx2, cy2, baseR, 0, Math.PI * 2);
+              ctx!.fill();
+            }
           }
-          smokeCanvas.globalAlpha = 1;
-        }
 
-        smokeCanvas.restore();
+          // Energy sparks during smoke-in peak
+          if (prog > 0.65 && portalStateRef.current === "in") {
+            const sparkAlpha = (prog - 0.65) / 0.35;
+            ctx!.globalAlpha = sparkAlpha * 0.9;
+            ctx!.fillStyle = `rgba(255, 235, 180, 1)`;
+            for (let i = 0; i < 18; i++) {
+              const sx = (Math.sin(starTimeRef.current * 5 + i * 1.3) * 0.5 + 0.5) * w;
+              const sy = (Math.cos(starTimeRef.current * 4.5 + i * 0.9) * 0.5 + 0.5) * h;
+              ctx!.beginPath();
+              ctx!.arc(sx, sy, 1.5 + Math.random() * 3, 0, Math.PI * 2);
+              ctx!.fill();
+            }
+            ctx!.globalAlpha = 1;
+          }
+          ctx!.restore();
+        }
+      }
+
+      // Draw absolute black screen overlay for Transition 5 (black screen after last background)
+      const bgW = w * 1.85;
+      const transW = w * 0.45;
+      const bgScroll = getBgScroll(scoreRef.current, w);
+      const x5 = -bgScroll + 4 * bgW + 4 * transW;
+      const xt5 = x5 + bgW; // Transition 5 starts here
+      if (xt5 < w) {
+        ctx!.save();
+        ctx!.fillStyle = "#000000";
+        ctx!.fillRect(xt5, 0, w * 4, h);
+        ctx!.restore();
       }
 
       ctx!.restore();
@@ -3228,18 +3393,18 @@ export default function ChaseRunner({
               fontWeight: "bold",
               letterSpacing: "1px",
             }}>
-              SHIELD ACTIVE
+              ARMOUR ACTIVE
             </span>
           </div>
           <div style={{
-            width: "100px",
+            width: "120px",
             height: "4px",
             background: "rgba(255, 255, 255, 0.15)",
             borderRadius: "2px",
             overflow: "hidden",
           }}>
             <div style={{
-              width: `${(armourTime / 15.0) * 100}%`,
+              width: `${Math.min(100, Math.max(0, (armourTime / (armourMaxTimeRef.current || 15.0)) * 100))}%`,
               height: "100%",
               background: "#00bfff",
               transition: "width 0.1s linear",
@@ -3279,14 +3444,14 @@ export default function ChaseRunner({
             </span>
           </div>
           <div style={{
-            width: "100px",
+            width: "120px",
             height: "4px",
             background: "rgba(255, 255, 255, 0.15)",
             borderRadius: "2px",
             overflow: "hidden",
           }}>
             <div style={{
-              width: `${(magnetTime / 10.0) * 100}%`,
+              width: `${Math.min(100, Math.max(0, (magnetTime / (magnetMaxTimeRef.current || 10.0)) * 100))}%`,
               height: "100%",
               background: "#e15fca",
               transition: "width 0.1s linear",
@@ -3303,10 +3468,55 @@ export default function ChaseRunner({
             <h1 style={styles.title}>Paused</h1>
             <p style={styles.copy}>Take a breath and resume when you’re ready.</p>
             <div style={styles.buttonRow}>
-              <button type="button" onClick={resumeGame} style={styles.restartButton}>
+              <button
+                type="button"
+                onClick={resumeGame}
+                onMouseEnter={() => updateOverlaySelection("left")}
+                style={{
+                  ...styles.restartButton,
+                  background: overlaySelection === "left"
+                    ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
+                    : "rgba(0,0,0,0.45)",
+                  border: overlaySelection === "left" ? "2px solid #d4af37" : "1px solid rgba(212,175,55,0.22)",
+                  boxShadow: overlaySelection === "left" ? "0 0 12px rgba(212, 175, 55, 0.4)" : "none",
+                  transform: overlaySelection === "left" ? "scale(1.05)" : "scale(1)",
+                  transition: "all 0.2s ease",
+                }}
+              >
                 RESUME
               </button>
-              <button type="button" onClick={exitGame} style={styles.exitButton}>
+              <button
+                type="button"
+                onClick={() => startRun()}
+                onMouseEnter={() => updateOverlaySelection("middle")}
+                style={{
+                  ...styles.restartButton,
+                  background: overlaySelection === "middle"
+                    ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
+                    : "rgba(0,0,0,0.45)",
+                  border: overlaySelection === "middle" ? "2px solid #d4af37" : "1px solid rgba(212,175,55,0.22)",
+                  boxShadow: overlaySelection === "middle" ? "0 0 12px rgba(212, 175, 55, 0.4)" : "none",
+                  transform: overlaySelection === "middle" ? "scale(1.05)" : "scale(1)",
+                  transition: "all 0.2s ease",
+                }}
+              >
+                RESTART
+              </button>
+              <button
+                type="button"
+                onClick={exitGame}
+                onMouseEnter={() => updateOverlaySelection("right")}
+                style={{
+                  ...styles.exitButton,
+                  background: overlaySelection === "right"
+                    ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
+                    : "rgba(0,0,0,0.45)",
+                  border: overlaySelection === "right" ? "2px solid #d4af37" : "1px solid rgba(212,175,55,0.22)",
+                  boxShadow: overlaySelection === "right" ? "0 0 12px rgba(212, 175, 55, 0.4)" : "none",
+                  transform: overlaySelection === "right" ? "scale(1.05)" : "scale(1)",
+                  transition: "all 0.2s ease",
+                }}
+              >
                 EXIT
               </button>
             </div>
@@ -3343,18 +3553,129 @@ export default function ChaseRunner({
               <button
                 type="button"
                 onClick={() => startRun()}
-                style={styles.restartButton}
+                onMouseEnter={() => updateOverlaySelection("left")}
+                style={{
+                  ...styles.restartButton,
+                  background: overlaySelection === "left"
+                    ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
+                    : "rgba(0,0,0,0.45)",
+                  border: overlaySelection === "left" ? "2px solid #d4af37" : "1px solid rgba(212,175,55,0.22)",
+                  boxShadow: overlaySelection === "left" ? "0 0 12px rgba(212, 175, 55, 0.4)" : "none",
+                  transform: overlaySelection === "left" ? "scale(1.05)" : "scale(1)",
+                  transition: "all 0.2s ease",
+                }}
               >
                 RESTART
               </button>
               <button
                 type="button"
-                onClick={exitGame} 
-                style={styles.exitButton}
+                onClick={exitGame}
+                onMouseEnter={() => updateOverlaySelection("right")}
+                style={{
+                  ...styles.exitButton,
+                  background: overlaySelection === "right"
+                    ? "linear-gradient(90deg, rgba(139,30,15,0.92) 0%, rgba(161,44,30,0.92) 100%)"
+                    : "rgba(0,0,0,0.45)",
+                  border: overlaySelection === "right" ? "2px solid #d4af37" : "1px solid rgba(212,175,55,0.22)",
+                  boxShadow: overlaySelection === "right" ? "0 0 12px rgba(212, 175, 55, 0.4)" : "none",
+                  transform: overlaySelection === "right" ? "scale(1.05)" : "scale(1)",
+                  transition: "all 0.2s ease",
+                }}
               >
                 EXIT
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {phase === "victory" && (
+        <div style={{
+          position: "absolute", inset: 0,
+          background: "linear-gradient(160deg, rgba(2,6,15,0.97) 0%, rgba(10,20,8,0.97) 100%)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 300, flexDirection: "column", gap: 0,
+        }}>
+          {/* Golden particle shimmer row */}
+          <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
+            {["✦", "✧", "✦", "✧", "✦", "✧", "✦"].map((s, i) => (
+              <span key={i} style={{
+                fontSize: 20, color: `hsl(${40 + i * 8}, 90%, ${65 + i * 3}%)`,
+                animation: `pulse ${0.9 + i * 0.1}s ease-in-out infinite alternate`,
+              }}>{s}</span>
+            ))}
+          </div>
+
+          <div style={{
+            background: "rgba(8, 14, 10, 0.92)",
+            border: "2px solid rgba(212, 175, 55, 0.55)",
+            borderRadius: 24, padding: "42px 60px",
+            boxShadow: "0 0 80px rgba(212, 175, 55, 0.15), 0 20px 60px rgba(0,0,0,0.9)",
+            textAlign: "center", maxWidth: 680,
+          }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>👑</div>
+            <h1 style={{
+              margin: "0 0 10px",
+              color: "#ffd166",
+              fontSize: 34,
+              fontFamily: "'Cinzel', serif",
+              letterSpacing: 3,
+              textShadow: "0 0 30px rgba(255, 209, 102, 0.6)",
+            }}>PRAGJYOTISHPURA ESCAPED!</h1>
+            <p style={{
+              margin: "0 0 8px",
+              color: "#f5e9c8",
+              fontSize: 20,
+              fontFamily: "'Cinzel', serif",
+              lineHeight: 1.7,
+            }}>
+              Congrats! You found your princess and escaped Pragjyotishpura!
+            </p>
+            <p style={{ margin: "0 0 24px", color: "#8aab88", fontSize: 15, fontFamily: "Georgia, serif", fontStyle: "italic" }}>
+              The ancient city watches as the hero vanishes into legend…
+            </p>
+            <p style={{ color: "#ffd700", fontWeight: 700, fontSize: 20, margin: "0 0 6px", fontFamily: "'Cinzel', serif" }}>
+              Score: {score} &nbsp;·&nbsp; Coins: {coins} ₹
+            </p>
+            <p style={{ color: "#888", fontSize: 14, margin: "0 0 28px" }}>Best: {best}</p>
+            <div style={{ display: "flex", gap: 14, justifyContent: "center" }}>
+              <button
+                type="button"
+                onClick={() => startRun()}
+                style={{
+                  background: "linear-gradient(90deg, #7a5c00, #c49a00)",
+                  color: "#fff",
+                  border: "1px solid rgba(212,175,55,0.5)",
+                  borderRadius: 10, padding: "13px 32px",
+                  fontSize: 16, fontWeight: "bold",
+                  cursor: "pointer", letterSpacing: 1.5,
+                  fontFamily: "'Cinzel', serif",
+                  textTransform: "uppercase",
+                }}
+              >Play Again</button>
+              <button
+                type="button"
+                onClick={exitGame}
+                style={{
+                  background: "rgba(255,255,255,0.04)",
+                  color: "#c8b87a",
+                  border: "1px solid rgba(212,175,55,0.25)",
+                  borderRadius: 10, padding: "13px 32px",
+                  fontSize: 16, fontWeight: "bold",
+                  cursor: "pointer", letterSpacing: 1.5,
+                  fontFamily: "'Cinzel', serif",
+                  textTransform: "uppercase",
+                }}
+              >Exit</button>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+            {["✦", "✧", "✦", "✧", "✦", "✧", "✦"].map((s, i) => (
+              <span key={i} style={{
+                fontSize: 20, color: `hsl(${40 + i * 8}, 90%, ${65 + i * 3}%)`,
+              }}>{s}</span>
+            ))}
           </div>
         </div>
       )}
@@ -3390,6 +3711,20 @@ export default function ChaseRunner({
               <div style={{ width: "3px", height: "12px", backgroundColor: "#f5ebcf", borderRadius: "1.5px" }} />
             </div>
           </button>
+
+          {/* DEV MODE badge — only visible when devMode = true */}
+          {devMode && (
+            <div style={{
+              position: "absolute", top: 16, left: "50%", transform: "translateX(-50%)",
+              background: "rgba(220, 30, 30, 0.92)", color: "#fff",
+              fontFamily: "'Cinzel', serif", fontWeight: 800, fontSize: 13,
+              letterSpacing: 2, padding: "5px 18px", borderRadius: 20,
+              border: "1.5px solid rgba(255,100,100,0.6)",
+              boxShadow: "0 0 16px rgba(220,30,30,0.5)",
+              pointerEvents: "none", zIndex: 999,
+              textTransform: "uppercase",
+            }}>⚙ DEV MODE — TESTING ONLY</div>
+          )}
 
           {/* Connect Treadmill Pill matching screenshot */}
           {control !== "keyboard_classic" && (
