@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Seer's Escape",
-  description: "Outrun the goblin through the shrine woods.",
+  title: "Pragjyotishpur Tale",
+  description: "Outrun the Asura through the shrine woods.",
 };
 
 export default function RootLayout({
